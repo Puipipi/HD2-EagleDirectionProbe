@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '0.3.0',
+    version = '0.6.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -114,6 +114,22 @@ local TICK_BUDGET_MS = 25       -- one tick's engine work should fit in this
 local SLOW_TICKS_BEFORE_STOP = 5
 local IDENTIFY_BUDGET_MS = 20   -- the one-off per-call munition pass must fit this
 
+-- Touch nothing for this long after load. The game is still initialising then, and
+-- engine accessors called too early are exactly the situation a native crash lives in.
+local STARTUP_GRACE_S = 20
+
+-- While outside a mission, still read and report at this interval. Waiting in the ship
+-- with a completely silent addon cannot distinguish "working, nothing to report" from
+-- "broken and reading nothing", so the probe reports in every state. These reads
+-- measure at 0.00 ms each; the 0.2.0 failure was never their cost.
+local STATUS_S = 30
+
+-- A beacon-identity unit must move at least this far before it counts as a thrown
+-- stratagem. The ship carries a stationary prop with the same resource id, and
+-- treating its existence as a call is what made 0.2.0 sample in the loadout. The
+-- observed prop moved 1.5 mm over 268 samples.
+local BEACON_MOVE_M = 0.75
+
 -- Only sample inside a mission. 0.2.0 sampled whenever a beacon-like object existed,
 -- and a stationary one exists on the ship: selecting a stratagem in the loadout
 -- started a 29-second sampling run in a menu, with no mission in progress.
@@ -185,7 +201,7 @@ local function report_capabilities()
     end
     local names = { 'Application', 'World', 'Unit', 'Vector3', 'Matrix4x4',
                     'IdString64', 'IdString32', 'GameSession', 'Network',
-                    'Color', 'Camera', 'LineObject', 'Gui' }
+                    'Color', 'Camera', 'LineObject', 'Gui', 'Script', 'Window' }
     local caps, missing = {}, {}
     for _, name in ipairs(names) do
         caps[name] = type(sr[name])
@@ -265,6 +281,16 @@ local function main_world()
     return nil
 end
 
+-- How many worlds the engine currently has. Cheap, and it is what separates "idle,
+-- nothing to report" from "broken, reading nothing" in the log.
+local function count_worlds()
+    local ok, worlds = pcall(sr.Application.worlds)
+    if not ok or type(worlds) ~= 'table' then return 'unavailable' end
+    local n = 0
+    for _ in pairs(worlds) do n = n + 1 end
+    return n
+end
+
 local function key_from_hex(hex)
     if type(sr.IdString64) == 'table' and sr.IdString64.from_hex then
         local ok, key = pcall(sr.IdString64.from_hex, hex)
@@ -296,19 +322,29 @@ end
 -- Are we actually in a mission? A beacon-identity prop exists on the ship and does not
 -- move, so the presence of a beacon is NOT evidence that a call happened - that
 -- misreading is what made 0.2.0 sample in a menu.
+--
+-- 0.3.0 got this wrong in the way that killed the game: it called
+-- `sr.GameSession.in_session()` with NO argument. Every proven mod in this workspace
+-- passes the session - `in_session(session)` - having obtained it from
+-- `sr.Network.game_session()` and checked it first. Calling it bare reached native code
+-- with a nil session and took the process down with 0xC0000409. The signature is
+-- copied from those mods now, not invented.
 local function in_session()
+    local net = sr.Network
+    if type(net) ~= 'table' or type(net.game_session) ~= 'function' then
+        return nil, 'no Network.game_session'
+    end
+    local ok, session = pcall(net.game_session)
+    if not ok or session == nil then return false, 'no session' end
+
     local gs = sr.GameSession
     if type(gs) == 'table' and type(gs.in_session) == 'function' then
-        local ok, value = pcall(gs.in_session)
-        if ok then return value == true, 'GameSession.in_session' end
+        local checked, value = pcall(gs.in_session, session)
+        if checked then return value == true, 'GameSession.in_session(session)' end
+        return nil, 'in_session errored'
     end
-    local world = main_world()
-    if world == nil then return false, 'no world' end
-    local ok, list = pcall(sr.World.units_by_resource, world,
-        'content/fac_helldivers/cha_avatar/avatar_helldiver')
-    if not ok then return false, 'avatar query failed' end
-    for _ in pairs(as_list(list)) do return true, 'local avatar present' end
-    return false, 'no local avatar'
+    -- No in_session API on this build: a live session object is the best evidence.
+    return true, 'session exists, no in_session API'
 end
 
 -- The aircraft query plus every munition query, resolved once at load. A hex that
@@ -329,6 +365,9 @@ local next_sample = 0
 local active_call = nil
 local seen_beacon_ids = {}
 local call_serial = 0
+-- unit handle -> {p = {x,y,z}, moved = bool}. Keyed by the handle, not the identity
+-- string, because that string is the resource hash shared by every beacon.
+local beacon_motion = {}
 
 -- Each entry carries the query it came from, so the log says which stratagem a call
 -- was, not merely where the aircraft went.
@@ -459,33 +498,57 @@ local function sample_body()
         return
     end
 
-    local world = main_world()
-    if world == nil then return end
+    -- Nothing at all until the game has settled.
+    if M.installed_at == nil then M.installed_at = now end
+    if now - M.installed_at < STARTUP_GRACE_S then return end
 
-    -- Never work in a menu. A stationary beacon-identity prop sits on the ship, and
-    -- selecting a stratagem in the loadout is what started 0.2.0's sampling run.
-    if IN_SESSION_ONLY then
-        local live, why = in_session()
-        M.session_reason = why
-        if not live then
-            if not M.noted_no_session then
-                M.noted_no_session = true
-                log('not in a mission (' .. tostring(why) .. '); probe idle, no queries')
-            end
-            return
+    local world = main_world()
+    if world == nil then
+        if now >= (M.next_status or 0) then
+            M.next_status = now + STATUS_S
+            local worlds = count_worlds()
+            log(string.format('status: no main world yet (Application.worlds=%s) - the '
+                .. 'probe is reading the engine but there is nothing to sample at this '
+                .. 'screen', tostring(worlds)))
+            emit({ kind = 'status', t = now, note = 'no main world',
+                   note2 = 'worlds=' .. tostring(worlds) })
         end
-        M.noted_no_session = nil
+        return
     end
 
+    -- Read first, decide later. These reads are what prove the probe works, and they
+    -- measure at 0.00 ms each, so they run in every state - on the ship, in a menu,
+    -- in a mission. 0.2.0's failure was never their cost.
     local beacons = units_by_resource(world, beacon_key())
     local beacon_entries, eagle_entries = {}, {}
     for _, unit in ipairs(beacons) do
         beacon_entries[#beacon_entries + 1] = { src = 'beacon', unit = unit }
     end
-    -- Only the aircraft is polled per tick.
     for _, unit in ipairs(units_by_resource(world, EAGLE_RESOURCE)) do
         eagle_entries[#eagle_entries + 1] = { src = 'aircraft', unit = unit }
     end
+
+    local live, why = true, 'gate disabled'
+    if IN_SESSION_ONLY then
+        live, why = in_session()
+    end
+
+    -- A status line in every state, so a silent log can never again be ambiguous
+    -- between "nothing to report" and "reading nothing".
+    if now >= (M.next_status or 0) then
+        M.next_status = now + STATUS_S
+        log(string.format('status: worlds=%s session=%s (%s) beacon_units=%d '
+            .. 'aircraft_units=%d temp_bytes=%s last_tick=%.1fms samples=%d calls=%d '
+            .. 'backoff=x%d', tostring(count_worlds()), tostring(live), tostring(why),
+            #beacon_entries, #eagle_entries, tostring(M.last_temp_bytes),
+            M.last_tick_ms or 0, M.samples, M.calls, M.backoff or 1))
+        emit({ kind = 'status', t = now,
+               note = string.format('worlds=%s session=%s beacon=%d aircraft=%d',
+                   tostring(count_worlds()), tostring(live), #beacon_entries,
+                   #eagle_entries) })
+    end
+
+    if live ~= true then return end
     if FALLBACK_WORLD_SCAN then
         local seen = {}
         for _, entry in ipairs(eagle_entries) do seen[entry.unit] = true end
@@ -497,14 +560,38 @@ local function sample_body()
         end
     end
 
-    -- A call starts the first time we see a beacon we have not seen before.
-    local fresh = false
+    -- A beacon counts only once it has MOVED. The ship carries a stationary prop with
+    -- the same resource id, and treating its mere existence as a call is what made
+    -- 0.2.0 sample while the player was in the loadout.
+    local moved = false
     for _, entry in ipairs(beacon_entries) do
-        local id = unit_identity(entry.unit)
-        if id and seen_beacon_ids[id] == nil then fresh = true end
+        local p = world_position(entry.unit)
+        local rec = p and beacon_motion[entry.unit]
+        if p and rec == nil then
+            beacon_motion[entry.unit] = { p = p }
+        elseif p then
+            local dx, dy, dz = p[1] - rec.p[1], p[2] - rec.p[2], p[3] - rec.p[3]
+            if math.sqrt(dx * dx + dy * dy + dz * dz) > BEACON_MOVE_M then
+                rec.moved = true
+            end
+            rec.p = p
+        end
+        if rec and rec.moved then moved = true end
     end
-    if fresh or (active_call == nil and #beacon_entries > 0) then
-        if active_call == nil then begin_call(now, beacon_entries) end
+
+    if #beacon_entries > 0 and not moved and now >= (M.next_static_report or 0) then
+        M.next_static_report = now + 120
+        log(string.format('a beacon-identity unit is present but has not moved %.2f m: '
+            .. 'ignoring it as the ship prop, not a thrown stratagem', BEACON_MOVE_M))
+    end
+
+    -- Never let the motion table grow without bound if units churn.
+    local motion_n = 0
+    for _ in pairs(beacon_motion) do motion_n = motion_n + 1 end
+    if motion_n > 64 then beacon_motion = {} end
+
+    if moved and active_call == nil then
+        begin_call(now, beacon_entries)
     end
 
     if active_call == nil then
@@ -553,6 +640,7 @@ local function sample_body()
         emit({ kind = 'call_end', t = now, call = active_call.id,
                note = timed_out and 'timeout' or 'beacon_gone' })
         active_call = nil
+        beacon_motion = {}
         for id in pairs(seen_beacon_ids) do seen_beacon_ids[id] = nil end
     end
 end
@@ -567,6 +655,7 @@ local function guarded()
     temp_guard_end(saved)
     local spent = (os.clock() - began) * 1000
     M.last_tick_ms = spent
+    M.last_temp_bytes = saved
     if spent > (M.slowest_tick_ms or 0) then M.slowest_tick_ms = spent end
 
     if not ok then
@@ -607,8 +696,8 @@ local function install()
 
     resolve_query_keys()
     log(string.format('v%s: %d Hz, in-session only, %d ms tick budget, self-disables '
-        .. 'after %d slow ticks', M.version, SAMPLE_HZ, TICK_BUDGET_MS,
-        SLOW_TICKS_BEFORE_STOP))
+        .. 'after %d slow ticks, %d s startup grace', M.version, SAMPLE_HZ,
+        TICK_BUDGET_MS, SLOW_TICKS_BEFORE_STOP, STARTUP_GRACE_S))
     log(string.format('querying the aircraft + beacon every tick; %d munition '
         .. 'identities once per call under a %d ms budget', #RESOLVED,
         IDENTIFY_BUDGET_MS))

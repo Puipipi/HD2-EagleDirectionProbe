@@ -286,8 +286,14 @@ class CostContractTest(unittest.TestCase):
         body = self.sample_body()
         self.assertNotIn('RESOLVED', body,
                          'the per-tick path must not sweep the munition identities')
-        self.assertLessEqual(body.count('units_by_resource'), 2,
-                             'the per-tick path must stay at the aircraft plus beacon')
+        calls = re.findall(r'units_by_resource\(([^()]*(?:\([^()]*\)[^()]*)*)\)', body)
+        self.assertTrue(calls, 'no units_by_resource call found in the tick at all')
+        self.assertLessEqual(len(calls), 4,
+                             'the per-tick path must stay at the beacon plus aircraft')
+        for args in calls:
+            self.assertTrue('beacon_key()' in args or 'EAGLE_RESOURCE' in args,
+                            'only the beacon and the aircraft may be queried per tick, '
+                            'found: %s' % args)
 
     def test_sampling_is_gated_on_being_in_a_mission(self):
         self.assertIn('IN_SESSION_ONLY', self.source)
@@ -310,6 +316,51 @@ class CostContractTest(unittest.TestCase):
     def test_the_jsonl_is_flushed_periodically(self):
         self.assertIn('jsonl.flush', self.source,
                       'a crash must not cost us the data again')
+
+
+    def test_in_session_is_called_with_its_session_argument(self):
+        """0.3.0 called it bare and the game died with 0xC0000409.
+
+        Every proven mod in this workspace writes `in_session(session)`, having got the
+        session from `Network.game_session()` first. Inventing the signature instead of
+        copying it is what killed the process, so it is pinned here.
+        """
+        self.assertIn('pcall(gs.in_session, session)', self.source,
+                      'in_session must be called WITH the session argument')
+        self.assertNotIn('pcall(gs.in_session)', self.source,
+                         'the bare call is the 0.3.0 crash; do not bring it back')
+        self.assertIn('net.game_session', self.source,
+                      'the session must come from Network.game_session()')
+
+    def test_there_is_a_startup_grace(self):
+        self.assertIn('STARTUP_GRACE_S', self.source)
+        self.assertRegex(self.source, r'STARTUP_GRACE_S\s*=\s*\d+')
+
+    def test_a_stationary_beacon_does_not_count_as_a_call(self):
+        """The ship prop must not start a call.
+
+        0.2.0 inferred a call from the mere existence of a beacon-identity unit, and a
+        stationary one sits on the ship - which is why it sampled in the loadout. The
+        gate is movement, and it must be keyed by the unit handle: the identity string
+        is the resource hash and is shared by every beacon.
+        """
+        self.assertIn('BEACON_MOVE_M', self.source)
+        self.assertIn('beacon_motion[entry.unit]', self.source,
+                      'the motion table must be keyed by the unit handle')
+        body = self.sample_body()
+        self.assertIn('moved and active_call == nil', body,
+                      'a call must require movement, not mere presence')
+
+    def test_there_is_a_status_line_in_every_state(self):
+        """A silent log must never again be ambiguous.
+
+        Before this, waiting in the ship produced no lines at all, so "idle" and
+        "reading nothing" looked identical.
+        """
+        self.assertIn('STATUS_S', self.source)
+        self.assertIn("kind = 'status'", self.source)
+        body = self.sample_body()
+        self.assertIn('status:', body)
 
 
 if __name__ == '__main__':
