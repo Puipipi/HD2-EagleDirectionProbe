@@ -88,6 +88,10 @@ python -B tools/analyze_eagle_probe.py "%LOCALAPPDATA%\CowboyBingus\Helldivers2\
 | 首个 `stingray` 能力表全为 `table` | 引擎 API 与任何共享运行时模组无关，一次性定论 | 继续 |
 | `beacon units=0` | 信标没被枚举到 | 先修这个，否则整轮数据无用 |
 | 有 `call N began` 但样本里没有 `eagles` | 飞鹰单位没被资源查询列出 | 打开 `FALLBACK_WORLD_SCAN` 重建 |
+| 分析器打印 `measured from : aircraft` | 方向取自**飞机本体**的航迹，这是可信的那种 | 正常 |
+| 分析器打印 `NOT the aircraft` 或 `WARNING` | 该次没抓到飞机，方向取自**弹体**——弹体是下落的，不是来袭方向 | 该次读数不可信；若每次都这样，先修飞机查询 |
+
+**为什么分析器要挑轨迹。** 探针同时记录飞机和弹体。弹体的轨迹是**下落**，不是来袭方向。所以分析器**优先取飞机**那条（`src=aircraft`），只有在完全没有飞机轨迹时才退回弹体，并明确打出警告——退回的读数不该被同等信任。
 
 ## 已知机制：飞鹰会规避障碍（用户提供，本仓库尚未验证）
 

@@ -168,7 +168,12 @@ def choose_up(records, forced):
 
 
 def tracks(records, key, up):
-    """Per-unit track of (t, point, forward) from sample and idle records."""
+    """Per-unit track of (t, point, forward), keeping the query each unit came from.
+
+    The source matters: an Eagle call records the aircraft AND its munitions, and a
+    falling bomb is not the incoming direction. The caller must be able to prefer the
+    aircraft rather than trusting whichever track happens to be longest.
+    """
     out = {}
     for rec in records:
         if rec.get('kind') not in ('sample', 'idle_eagle'):
@@ -176,11 +181,21 @@ def tracks(records, key, up):
         for unit in rec.get(key) or []:
             if 'p' not in unit:
                 continue
-            out.setdefault(unit['id'], []).append(
-                (rec.get('t', 0.0), unit['p'], unit.get('f')))
-    for rows in out.values():
-        rows.sort(key=lambda r: r[0])
+            entry = out.setdefault(unit['id'], {'src': None, 'rows': []})
+            if entry['src'] is None:
+                entry['src'] = unit.get('src')
+            entry['rows'].append((rec.get('t', 0.0), unit['p'], unit.get('f')))
+    for entry in out.values():
+        entry['rows'].sort(key=lambda r: r[0])
     return out
+
+
+def longest(entries):
+    """The longest track from a list of track entries, or None."""
+    usable = [e for e in entries if e['rows']]
+    if not usable:
+        return None
+    return max(usable, key=lambda e: len(e['rows']))
 
 
 def track_direction(rows, up):
@@ -230,10 +245,8 @@ def analyze_call(call_id, records, up, label=None):
     beacons = tracks(records, 'beacons', up)
     eagles = tracks(records, 'eagles', up)
 
-    beacon_rows = None
-    for _, rows in beacons.items():
-        if beacon_rows is None or len(rows) > len(beacon_rows):
-            beacon_rows = rows
+    chosen_beacon = longest(list(beacons.values()))
+    beacon_rows = chosen_beacon['rows'] if chosen_beacon else None
     if not beacon_rows or len(beacon_rows) < 2:
         return {'call': call_id, 'status': 'no usable beacon track'}
 
@@ -258,10 +271,18 @@ def analyze_call(call_id, records, up, label=None):
     for rule in RULES:
         out['predicted_%s_deg' % rule] = round(norm180(predict_heading(rule, line_bearing)), 2)
 
-    eagle_rows = None
-    for _, rows in eagles.items():
-        if eagle_rows is None or len(rows) > len(eagle_rows):
-            eagle_rows = rows
+    # Prefer the aircraft. A falling bomb or rocket also gets recorded, and its track
+    # is a descent, not the incoming direction - measuring that would silently report
+    # a wrong axis. Fall back to a munition only when no aircraft track exists, and
+    # say so, because a fallback reading deserves less trust.
+    candidates = list(eagles.values())
+    aircraft = [e for e in candidates if e['src'] == 'aircraft']
+    chosen = longest(aircraft) or longest(candidates)
+    eagle_rows = chosen['rows'] if chosen else None
+    out['measured_from'] = chosen['src'] if chosen else None
+    if chosen and chosen['src'] != 'aircraft':
+        out['measured_from_warning'] = ('no aircraft track; measured from %s instead'
+                                        % chosen['src'])
     if not eagle_rows or len(eagle_rows) < 2:
         out['eagle'] = 'not seen in this call'
         return out
@@ -310,6 +331,18 @@ def classify_verdict(usable):
         groups.setdefault(row.get('stratagem') or 'unknown', []).append(row)
 
     lines = ['VERDICT over %d measurable call(s), grouped by stratagem:' % len(usable)]
+    fallback = sorted(str(r.get('call')) for r in usable
+                      if r.get('measured_from') not in (None, 'aircraft'))
+    if fallback:
+        lines += [
+            '  WARNING: call(s) %s produced no aircraft track and were measured from a'
+            % ', '.join(fallback),
+            '           munition instead. A munition track is a descent, not an'
+            ' incoming',
+            '           direction, so those calls can report a wrong axis. Trust the'
+            ' rest;',
+            '           if every call did this, the aircraft query needs fixing first.',
+        ]
     resolved, deflected, unresolved = [], [], []
     summary = {}
 
@@ -495,6 +528,11 @@ def main():
             print('   measured heading       : %s' % row.get('eagle'))
             continue
         print('   MEASURED heading       : %.1f deg' % row['measured_heading_deg'])
+        source = row.get('measured_from')
+        print('   measured from          : %s%s'
+              % (source or '?',
+                 '' if source == 'aircraft'
+                 else '   <-- NOT the aircraft; treat this axis with care'))
         for rule in RULES:
             mark = '  <- best' if rule == row.get('best_rule') else ''
             print('     %-18s predict %7.1f  err %7.1f%s'

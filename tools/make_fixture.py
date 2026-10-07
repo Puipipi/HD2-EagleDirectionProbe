@@ -33,6 +33,10 @@ SCENARIO_SRC = {
     'strafing': ['eagle_gunpods', 'eagle_base'],
     'cluster': ['eagle_cluster'],
     'deflected': ['eagle_gunpods', 'eagle_base'],
+    # The last two build their tracks explicitly; these entries only keep the lookup
+    # in emit() total.
+    'noisy': ['eagle_gunpods', 'eagle_base'],
+    'munition_only': ['eagle_gunpods', 'eagle_base'],
 }
 
 
@@ -100,6 +104,35 @@ def emit_call(lines, call_id, track, srcs, t_offset=0.0):
                   'note': 'timeout'})
 
 
+def emit_mixed_tracks(lines, call_id, wanted, extra):
+    """One call carrying two eagle tracks: the wanted one, plus a longer decoy.
+
+    `extra` stands in for the munition units the real probe also records. It is longer
+    than the aircraft track on purpose: a reader that just takes the longest track
+    would measure the decoy's axis instead of the incoming direction.
+    """
+    beacons = beacon_arc([0.0, 0.0, 1.5], [40.0, 0.0, 0.0])
+    tracks = ([wanted] if wanted else []) + ([extra] if extra else [])
+    lines.append({'kind': 'call_begin', 't': 0.0, 'call': call_id})
+    length = max([len(beacons)] + [len(t[0]) for t in tracks])
+    for i in range(length):
+        rec = {'kind': 'sample', 't': 0.0, 'call': call_id, 'n': i + 1}
+        if i < len(beacons):
+            bt, bp = beacons[i]
+            rec['beacons'] = [{'src': 'beacon', 'id': BEACON_HEX, 'p': bp}]
+            rec['t'] = max(rec['t'], bt)
+        units = []
+        for track, src in tracks:
+            if i < len(track):
+                et, ep = track[i]
+                units.append({'src': src, 'id': src, 'p': ep, 'pose': True})
+                rec['t'] = max(rec['t'], et)
+        if units:
+            rec['eagles'] = units
+        lines.append(rec)
+    lines.append({'kind': 'call_end', 't': 4.0, 'call': call_id, 'note': 'timeout'})
+
+
 def emit(path, scenario):
     lines = [{'kind': 'capabilities', 't': 0,
               'note': 'Application=table, World=table, Unit=table, Vector3=table'}]
@@ -120,10 +153,22 @@ def emit(path, scenario):
     elif scenario == 'cluster':
         for n, (a, b) in enumerate(cluster, start=1):
             emit_call(lines, n, eagle_track(a, b), srcs, t_offset=(n - 1) * 10.0)
-    else:
+    elif scenario == 'deflected':
         a, b = strafing[0]
         emit_call(lines, 1, eagle_track(a, b), srcs)
         emit_call(lines, 2, rotate_about(a, b, 55.0), srcs, t_offset=10.0)
+    elif scenario == 'noisy':
+        # The real answer is the aircraft's short track. A munition is recorded for
+        # longer and points 90 degrees away; a naive reader would report that instead.
+        wanted = (eagle_track([-300.0, 0.0, UP_Z], [300.0, 0.0, UP_Z + 0.5], samples=6),
+                  'aircraft')
+        decoy = (eagle_track([40.0, -50.0, UP_Z], [40.0, 50.0, UP_Z + 0.5], samples=30),
+                 'eagle_gunpods')
+        emit_mixed_tracks(lines, 1, wanted, decoy)
+    else:   # 'munition_only' - no aircraft track at all; the analyzer must say so
+        decoy = (eagle_track([40.0, -50.0, UP_Z], [40.0, 50.0, UP_Z + 0.5], samples=30),
+                 'eagle_gunpods')
+        emit_mixed_tracks(lines, 1, None, decoy)
 
     with open(path, 'w', encoding='utf-8') as fh:
         for rec in lines:
@@ -134,7 +179,8 @@ def emit(path, scenario):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--scenario', required=True,
-                    choices=('strafing', 'cluster', 'deflected'))
+                    choices=('strafing', 'cluster', 'deflected', 'noisy',
+                             'munition_only'))
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
     emit(args.out, args.scenario)

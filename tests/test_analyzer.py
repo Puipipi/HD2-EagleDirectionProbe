@@ -145,6 +145,35 @@ class PreRegisteredFamilyTest(unittest.TestCase):
                       'the gas airstrike was not in the 2024 source; say so')
 
 
+class AircraftPreferenceTest(unittest.TestCase):
+    """A munition track is a descent, not the incoming direction.
+
+    The probe records the aircraft AND its munitions. A reader that simply took the
+    longest track would measure a falling bomb, so this pins the preference.
+    """
+
+    def test_aircraft_is_chosen_over_a_longer_munition_track(self):
+        _, _, rows = analyze_fixture('noisy.jsonl')
+        row = rows[0]
+        self.assertEqual(row['measured_from'], 'aircraft')
+        self.assertNotIn('measured_from_warning', row)
+        self.assertEqual(row['best_rule'], 'along_from_behind')
+
+    def test_no_warning_when_every_call_used_the_aircraft(self):
+        _, _, rows = analyze_fixture('noisy.jsonl')
+        lines = ' '.join(analyzer.classify_verdict(rows)['lines'])
+        self.assertNotIn('WARNING', lines)
+
+    def test_munition_only_call_is_measured_but_flagged(self):
+        _, _, rows = analyze_fixture('munition_only.jsonl')
+        row = rows[0]
+        self.assertNotEqual(row['measured_from'], 'aircraft')
+        self.assertIn('measured_from_warning', row)
+        lines = analyzer.classify_verdict(rows)['lines']
+        self.assertTrue(any('WARNING' in line for line in lines),
+                        'a fallback reading must be called out, not silently trusted')
+
+
 def lua_table_block(name):
     """The body of a top-level `local NAME = { ... }` table from the addon source.
 
