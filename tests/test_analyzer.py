@@ -253,5 +253,64 @@ class ReadOnlyContractTest(unittest.TestCase):
         self.assertIn('READ-ONLY', self.source)
 
 
+class CostContractTest(unittest.TestCase):
+    """The cost and safety rules 0.2.0 broke.
+
+    0.2.0 queried 11 identities on every tick at 10 Hz and never restored the script
+    temp byte count; the game then died with 0xC0000409 while the addon was sampling.
+    These assertions exist so those two mistakes cannot come back quietly.
+    """
+
+    def setUp(self):
+        self.source = SOURCE_PATH.read_text(encoding='utf-8')
+
+    def sample_body(self):
+        """The per-tick path only - the tick body, without the per-call pass."""
+        marker = 'local function sample_body'
+        self.assertIn(marker, self.source, 'sample_body is gone; update this test')
+        body = self.source.split(marker, 1)[1]
+        return body.split('local function guarded', 1)[0]
+
+    def test_temp_byte_count_is_saved_and_restored(self):
+        self.assertIn('temp_byte_count', self.source)
+        self.assertIn('set_temp_byte_count', self.source)
+        self.assertIn('temp_guard_begin', self.source)
+        self.assertIn('temp_guard_end', self.source)
+
+    def test_the_tick_is_wrapped_in_the_guard(self):
+        guarded = self.source.split('local function guarded', 1)[1]
+        self.assertIn('temp_guard_begin()', guarded)
+        self.assertIn('temp_guard_end(', guarded)
+
+    def test_per_tick_path_does_not_sweep_every_identity(self):
+        body = self.sample_body()
+        self.assertNotIn('RESOLVED', body,
+                         'the per-tick path must not sweep the munition identities')
+        self.assertLessEqual(body.count('units_by_resource'), 2,
+                             'the per-tick path must stay at the aircraft plus beacon')
+
+    def test_sampling_is_gated_on_being_in_a_mission(self):
+        self.assertIn('IN_SESSION_ONLY', self.source)
+        self.assertIn('in_session()', self.source)
+        body = self.sample_body()
+        self.assertIn('in_session()', body,
+                      'the mission gate must be inside the tick, before any query')
+
+    def test_there_is_a_self_disable(self):
+        self.assertIn('SELF-DISABLED', self.source)
+        self.assertIn('SLOW_TICKS_BEFORE_STOP', self.source)
+        self.assertIn('TICK_BUDGET_MS', self.source)
+
+    def test_sample_rate_is_conservative(self):
+        match = re.search(r'local SAMPLE_HZ\s*=\s*(\d+)', self.source)
+        self.assertIsNotNone(match, 'SAMPLE_HZ is gone')
+        self.assertLessEqual(int(match.group(1)), 5,
+                             'the sample rate was raised; measure the cost first')
+
+    def test_the_jsonl_is_flushed_periodically(self):
+        self.assertIn('jsonl.flush', self.source,
+                      'a crash must not cost us the data again')
+
+
 if __name__ == '__main__':
     unittest.main()

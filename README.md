@@ -1,6 +1,40 @@
 # 飞鹰来袭方向探针 / Eagle Direction Probe
 
-**状态：只读测量工具，源码、测试与安装包齐备；一次实机都没跑过，不宣称任何游戏内效果。**
+**状态：只读测量工具。已在实机跑过两次，其中 0.2.0 期间游戏崩溃（`0xC0000409`），
+0.3.0 是针对那次崩溃的重写，尚未实机运行。不要用 0.2.0——它已从本仓库删除。**
+
+## 事故记录：0.2.0 崩溃（2026-10-07）
+
+`0.2.0` 期间游戏以 **`0xC0000409 STATUS_STACK_BUFFER_OVERRUN`（`__fastfail`）** 终止；转储中确认本
+addon 已加载。证据与两个已确认的设计缺陷：
+
+| 缺陷 | 0.2.0 做了什么 | 为什么危险 |
+| --- | --- | --- |
+| **每帧查询风暴** | 每个 tick 查询 **11 个资源身份**，5–10 Hz，约每秒 110 次引擎查询 | 工作区已知「遍历世界单位」有实机崩溃前科；我把查询次数放大了 5 倍却没先测成本 |
+| **没有 temp 字节数纪律** | 全程没有触碰 `sr.Script.temp_byte_count` | 工作区已跑通的覆盖模组把「存/取 temp 字节数」当**每帧纪律**（顶层 `protected()` 包住整个 tick，逐单位读包围盒时也成对调用）。脚本临时内存区不会被自动重置，只分配不还原就会增长 |
+| **在菜单里采样** | 只凭「存在信标资源」就认定发生了一次呼叫 | 飞船上有一个**完全静止**的同资源物件；实机日志显示它被当成一次 29 秒的「呼叫」（坐标期间只动了 1.5 mm），而当时没有任务在进行、飞鹰单位出现 0 次 |
+
+**因果归属要说清楚：** 崩溃码与上述缺陷**相符**，但我**没有**从转储里取到崩溃调用栈，所以不能断言
+「一定是本 addon 造成的」。判定它是否复现的**对照实验**是：在**不部署本模组**的情况下做同样的战备
+选择动作。若照样崩，则与本模组无关或不止与本模组有关。
+
+## 0.3.0 的对应修复
+
+- **只在任务内工作**：以 `sr.GameSession.in_session()` 作为闸门（不可用时退化为「必须能看到本地 avatar」），菜单里**一次查询都不发**；
+- **每帧只查 2 个身份**（飞机 + 信标）；弹种识别改为**每次呼叫一次**、带 20 ms 预算、并**逐键记录耗时**——因为这个 API 的成本正是我们所不知道的；
+- **每帧都在 temp 字节数守卫内**，并**计时**；
+- **限速 + 退避 + 自停**：单帧超过 25 ms 就降速（间隔翻倍），连续 5 次超标就**永久停止采样**并写明原因；
+- **采样率降到 5 Hz**；
+- **jsonl 定期 flush**：0.1.0 的数据因为只在干净退出时才写盘，随崩溃一起丢了。
+
+### 为什么这些规则现在有测试兜着
+
+`tests/test_analyzer.py` 里的 `CostContractTest` 把上面每一条都变成断言：per-tick 路径不得出现
+`RESOLVED`、`units_by_resource` 调用不得超过 2 次、必须在 tick 内先过 `in_session()`、必须存在
+`temp_byte_count` 守卫、必须有自停分支、采样率不得高于 5 Hz、必须定期 flush。**这些是我已经犯过
+一次的错，不该靠我记得。**
+
+---
 
 它只回答一个问题：**呼叫飞鹰系列红战备时，飞鹰飞机的真实来袭方向是什么，它与潜兵、与战备信标是什么几何关系？**
 
@@ -64,7 +98,7 @@ python -m unittest discover -s tests -v                    # 离线检查
 
 然后：
 
-1. 在模组管理器里导入 `dist/HD2-EagleDirectionProbe-0.2.0.zip`，确认 **Bingus Shared Loader** 也启用，部署；
+1. 在模组管理器里导入 `dist/HD2-EagleDirectionProbe-0.3.0.zip`，确认 **Bingus Shared Loader** 也启用，部署；
 2. 进一局，从不同角度呼叫飞鹰战备 3–4 次（空袭 / 集束 / 凝固汽油 / 机枪扫射 都行；500kg 是单发、没有轴线，别只用它）。**基准数据尽量在开阔地形取**，理由见下节；
 3. 退出任务，探针在 shutdown 时刷盘。
 
@@ -159,7 +193,7 @@ python -B work/standalone/build_probe.py
 python -m unittest discover -s tests -v
 ```
 
-Import `dist/HD2-EagleDirectionProbe-0.2.0.zip` alongside Bingus Shared Loader v15+,
+Import `dist/HD2-EagleDirectionProbe-0.3.0.zip` alongside Bingus Shared Loader v15+,
 deploy, call a few Eagle stratagems from different angles, then leave the mission.
 Results land in `EagleDirectionProbe.jsonl` and `EagleDirectionProbe.log` under
 `%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\`, and

@@ -32,13 +32,17 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '0.2.0',
+    version = '0.3.0',
     status = 'starting',
     reads = 0,
     errors = 0,
     samples = 0,
     calls = 0,
     stopped = false,
+    backoff = 1,            -- multiplies the sample interval when ticks run slow
+    slow_ticks = 0,
+    slowest_tick_ms = 0,
+    key_costs = {},         -- measured cost of each engine query, for the report
 }
 rawset(_G, MOD_KEY, M)
 
@@ -96,10 +100,24 @@ local EAGLE_GUIDS = {}
 for _, row in ipairs(QUERY_KEYS) do EAGLE_GUIDS[row.hex] = row.src end
 EAGLE_GUIDS[BEACON_HEX] = 'beacon'
 
-local SAMPLE_HZ = 10            -- engine accessor calls per second
+-- COST AND SAFETY BUDGETS. These exist because 0.2.0 shipped without them and the
+-- game died with 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN / __fastfail) while this
+-- addon was sampling. 0.2.0 called units_by_resource 11 times per tick at 10 Hz -
+-- about 110 engine queries a second - and never restored the script temp byte count.
+-- Both of those are now bounded rather than trusted.
+local SAMPLE_HZ = 5             -- deliberately below what the probe would like
 local MAX_SAMPLES = 20000       -- hard stop; keeps the log bounded
 local CALL_TIMEOUT_S = 30       -- a call is abandoned after this long
 local CALL_GONE_S = 3           -- ...or this long after the beacon disappears
+
+local TICK_BUDGET_MS = 25       -- one tick's engine work should fit in this
+local SLOW_TICKS_BEFORE_STOP = 5
+local IDENTIFY_BUDGET_MS = 20   -- the one-off per-call munition pass must fit this
+
+-- Only sample inside a mission. 0.2.0 sampled whenever a beacon-like object existed,
+-- and a stationary one exists on the ship: selecting a stratagem in the loadout
+-- started a 29-second sampling run in a menu, with no mission in progress.
+local IN_SESSION_ONLY = true
 
 -- Off by default. Turning this on makes the probe walk the whole world (about 22,000
 -- units on a mission world) to find Eagle units by identity. That path has a crash
@@ -257,6 +275,42 @@ end
 
 local function beacon_key() return key_from_hex(BEACON_HEX) end
 
+-- ------------------------------------------------------------- cost discipline --
+-- The workspace's proven overlay wraps every tick in a temp-byte-count save/restore,
+-- and repeats the pair per unit around box reads. The script temp arena is not reset
+-- for us, so a tick that allocates without restoring grows it. 0.2.0 did not do this
+-- at all, which is one of the two defects that shipped.
+local function temp_guard_begin()
+    if type(sr.Script) == 'table' and type(sr.Script.temp_byte_count) == 'function' then
+        local ok, saved = pcall(sr.Script.temp_byte_count)
+        if ok then return saved end
+    end
+    return nil
+end
+
+local function temp_guard_end(saved)
+    if saved == nil then return end
+    pcall(sr.Script.set_temp_byte_count, saved)
+end
+
+-- Are we actually in a mission? A beacon-identity prop exists on the ship and does not
+-- move, so the presence of a beacon is NOT evidence that a call happened - that
+-- misreading is what made 0.2.0 sample in a menu.
+local function in_session()
+    local gs = sr.GameSession
+    if type(gs) == 'table' and type(gs.in_session) == 'function' then
+        local ok, value = pcall(gs.in_session)
+        if ok then return value == true, 'GameSession.in_session' end
+    end
+    local world = main_world()
+    if world == nil then return false, 'no world' end
+    local ok, list = pcall(sr.World.units_by_resource, world,
+        'content/fac_helldivers/cha_avatar/avatar_helldiver')
+    if not ok then return false, 'avatar query failed' end
+    for _ in pairs(as_list(list)) do return true, 'local avatar present' end
+    return false, 'no local avatar'
+end
+
 -- The aircraft query plus every munition query, resolved once at load. A hex that
 -- fails to resolve is kept as the plain string and simply returns no units, so a
 -- build that does not accept one of these costs nothing but a wasted hash lookup.
@@ -352,12 +406,51 @@ local function fallback_eagles(world, now)
     return found
 end
 
+-- ------------------------------------------------------- costly per-call pass --
+-- Working out WHICH stratagem a call was means querying the munition identities, and
+-- that is exactly what 0.2.0 did on every tick - 11 keys at 10 Hz. It is done once per
+-- call now, under a time budget, and the cost of every key is logged, because the cost
+-- of these queries is the thing we do not actually know.
+local function identify_call(world, call, now)
+    if call.identified then return end
+    call.identified = true
+    local began = os.clock()
+    local hits = {}
+    for _, row in ipairs(RESOLVED) do
+        local key_began = os.clock()
+        local units = units_by_resource(world, row.key)
+        local key_ms = (os.clock() - key_began) * 1000
+        M.key_costs[#M.key_costs + 1] = { src = row.src, units = #units, ms = key_ms }
+        log(string.format('  key %-18s units=%d  %.2f ms', row.src, #units, key_ms))
+        for _, unit in ipairs(units) do
+            hits[#hits + 1] = { src = row.src, unit = unit }
+        end
+        if (os.clock() - began) * 1000 > IDENTIFY_BUDGET_MS then
+            call.identify_aborted = true
+            log(string.format('call %d: identification stopped early - %d key(s) already '
+                .. 'cost over %d ms, the rest are skipped', call.id, #M.key_costs,
+                IDENTIFY_BUDGET_MS))
+            break
+        end
+    end
+    for _, entry in ipairs(hits) do
+        local family = STRATAGEM_OF[entry.src]
+        if family and not call.srcs[family] then
+            call.srcs[family] = true
+            log(string.format('call %d: %s present -> stratagem %s',
+                call.id, entry.src, family))
+            emit({ kind = 'call_stratagem', t = now, call = call.id,
+                   note = entry.src .. '=' .. family })
+        end
+    end
+end
+
 -- ----------------------------------------------------------------------- tick --
-local function tick()
+local function sample_body()
     if M.stopped then return end
     local now = os.clock()
     if now < next_sample then return end
-    next_sample = now + (1 / SAMPLE_HZ)
+    next_sample = now + (1 / (SAMPLE_HZ / (M.backoff or 1)))
 
     if M.samples >= MAX_SAMPLES then
         M.stopped = true
@@ -369,15 +462,29 @@ local function tick()
     local world = main_world()
     if world == nil then return end
 
+    -- Never work in a menu. A stationary beacon-identity prop sits on the ship, and
+    -- selecting a stratagem in the loadout is what started 0.2.0's sampling run.
+    if IN_SESSION_ONLY then
+        local live, why = in_session()
+        M.session_reason = why
+        if not live then
+            if not M.noted_no_session then
+                M.noted_no_session = true
+                log('not in a mission (' .. tostring(why) .. '); probe idle, no queries')
+            end
+            return
+        end
+        M.noted_no_session = nil
+    end
+
     local beacons = units_by_resource(world, beacon_key())
     local beacon_entries, eagle_entries = {}, {}
     for _, unit in ipairs(beacons) do
         beacon_entries[#beacon_entries + 1] = { src = 'beacon', unit = unit }
     end
-    for _, row in ipairs(RESOLVED) do
-        for _, unit in ipairs(units_by_resource(world, row.key)) do
-            eagle_entries[#eagle_entries + 1] = { src = row.src, unit = unit }
-        end
+    -- Only the aircraft is polled per tick.
+    for _, unit in ipairs(units_by_resource(world, EAGLE_RESOURCE)) do
+        eagle_entries[#eagle_entries + 1] = { src = 'aircraft', unit = unit }
     end
     if FALLBACK_WORLD_SCAN then
         local seen = {}
@@ -409,19 +516,8 @@ local function tick()
         return
     end
 
-    -- Name the stratagem as soon as its munition shows up, so the log is
-    -- self-identifying and the player does not have to remember the call order.
-    for _, entry in ipairs(eagle_entries) do
-        local src = entry.src
-        if src and not active_call.srcs[src] then
-            active_call.srcs[src] = true
-            local family = STRATAGEM_OF[src]
-            log(string.format('call %d: %s seen%s', active_call.id, src,
-                family and (' -> stratagem ' .. family) or ''))
-            emit({ kind = 'call_stratagem', t = now, call = active_call.id,
-                   note = family and (src .. '=' .. family) or src })
-        end
-    end
+    -- One bounded pass per call, not a query storm on every tick.
+    identify_call(world, active_call, now)
 
     active_call.samples = active_call.samples + 1
     active_call.last_seen = (#beacon_entries > 0) and now or active_call.last_seen
@@ -434,6 +530,9 @@ local function tick()
     end)
     if ok and jsonl then
         pcall(jsonl.write, jsonl, line .. '\n')
+        -- 0.1.0's jsonl was lost when the process died, because it was only flushed on
+        -- a clean shutdown. Flush as we go, so a crash still leaves the evidence.
+        if M.samples % 25 == 0 then pcall(jsonl.flush, jsonl) end
     else
         M.errors = M.errors + 1
     end
@@ -458,12 +557,38 @@ local function tick()
     end
 end
 
+-- Every tick runs inside the temp-byte-count guard and is timed. A tick that busts the
+-- budget slows the probe down; a run of them stops it. A probe that can degrade the
+-- game is not worth its data, and 0.2.0 had neither guard.
 local function guarded()
-    local ok, reason = pcall(tick)
+    local began = os.clock()
+    local saved = temp_guard_begin()
+    local ok, reason = pcall(sample_body)
+    temp_guard_end(saved)
+    local spent = (os.clock() - began) * 1000
+    M.last_tick_ms = spent
+    if spent > (M.slowest_tick_ms or 0) then M.slowest_tick_ms = spent end
+
     if not ok then
         M.errors = M.errors + 1
         M.last_error = tostring(reason)
         M.status = 'probe_error'
+        return
+    end
+
+    if spent > TICK_BUDGET_MS and not M.stopped then
+        M.slow_ticks = M.slow_ticks + 1
+        M.backoff = math.min((M.backoff or 1) * 2, 20)
+        log(string.format('slow tick: %.1f ms over the %d ms budget (slow #%d, '
+            .. 'interval now 1/%d of nominal)', spent, TICK_BUDGET_MS, M.slow_ticks,
+            M.backoff))
+        if M.slow_ticks >= SLOW_TICKS_BEFORE_STOP then
+            M.stopped = true
+            log('SELF-DISABLED: too many slow ticks. Sampling stopped so the probe '
+                .. 'cannot keep loading the engine. Send this log.')
+            emit({ kind = 'stopped', t = os.clock(),
+                   note = 'self-disabled after slow ticks' })
+        end
     end
 end
 
@@ -481,8 +606,12 @@ local function install()
     end
 
     resolve_query_keys()
-    log(string.format('querying %d identity key(s) per sample: aircraft plus the '
-        .. 'munitions that name each Eagle stratagem', #RESOLVED))
+    log(string.format('v%s: %d Hz, in-session only, %d ms tick budget, self-disables '
+        .. 'after %d slow ticks', M.version, SAMPLE_HZ, TICK_BUDGET_MS,
+        SLOW_TICKS_BEFORE_STOP))
+    log(string.format('querying the aircraft + beacon every tick; %d munition '
+        .. 'identities once per call under a %d ms budget', #RESOLVED,
+        IDENTIFY_BUDGET_MS))
 
     local previous = rawget(_G, 'update')
     if type(previous) == 'function' then
@@ -499,8 +628,14 @@ local function install()
     if type(shutdown) == 'function' then
         rawset(_G, 'shutdown', function(...)
             pcall(function()
-                log(string.format('shutdown: samples=%d calls=%d errors=%d reads=%d',
-                    M.samples, M.calls, M.errors, M.reads))
+                log(string.format('shutdown: samples=%d calls=%d errors=%d reads=%d '
+                    .. 'slowest_tick=%.1fms slow_ticks=%d backoff=x%d', M.samples,
+                    M.calls, M.errors, M.reads, M.slowest_tick_ms or 0, M.slow_ticks,
+                    M.backoff or 1))
+                for _, row in ipairs(M.key_costs) do
+                    log(string.format('  query cost %-18s units=%d %.2f ms',
+                        row.src, row.units, row.ms))
+                end
                 if jsonl then jsonl:flush(); jsonl:close(); jsonl = nil end
             end)
             return shutdown(...)
