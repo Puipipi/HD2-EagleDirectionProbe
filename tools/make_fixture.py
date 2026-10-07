@@ -44,36 +44,64 @@ def eagle_track(start, end, samples=30):
     return rows
 
 
-def emit(path, scenario):
-    # Player at the origin; the beacon is thrown due east and lands 40 m away.
-    throw_origin = [0.0, 0.0, 1.5]
-    landing = [40.0, 0.0, 0.0]
-    beacons = beacon_arc(throw_origin, landing)
+def rotated_track(start, end, degrees, up_index=2):
+    """An eagle track rotated about the beacon, to stand in for an obstacle deflection."""
+    cx, cy = (start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0
+    rad = math.radians(degrees)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    rows = []
+    samples = 30
+    for i in range(samples):
+        u = i / (samples - 1)
+        x = start[0] + (end[0] - start[0]) * u - cx
+        y = start[1] + (end[1] - start[1]) * u - cy
+        rx = x * cos_a - y * sin_a + cx
+        ry = x * sin_a + y * cos_a + cy
+        rz = (start[2] + (end[2] - start[2]) * u) + 0.5 * u
+        rows.append((u * 4.0, [round(rx, 4), round(ry, 4), round(rz, 4)]))
+    return rows
 
-    # H1: run axis perpendicular to the player->beacon line -> north/south, 600 m long.
-    # H2: run axis along that line -> east/west.
-    if scenario == 'h1':
-        eagle = eagle_track([38.0, -300.0, UP_Z], [42.0, 300.0, UP_Z + 0.5])
-    else:
-        eagle = eagle_track([-300.0, -2.0, UP_Z], [300.0, 2.0, UP_Z + 0.5])
 
-    lines = [{'kind': 'capabilities', 't': 0,
-              'note': 'Application=table, World=table, Unit=table, Vector3=table'}]
-    lines.append({'kind': 'call_begin', 't': 0.0, 'call': 1})
-
-    for i in range(max(len(beacons), len(eagle))):
-        t = beacons[min(i, len(beacons) - 1)][0]
-        rec = {'kind': 'sample', 't': t, 'call': 1, 'n': i + 1}
+def emit_call(lines, call_id, eagles, t_offset=0.0):
+    """Emit one call's samples; every eagle track in the list is written per sample."""
+    beacons = beacon_arc([0.0, 0.0, 1.5], [40.0, 0.0, 0.0])
+    lines.append({'kind': 'call_begin', 't': t_offset, 'call': call_id})
+    length = max([len(beacons)] + [len(e) for e in eagles])
+    for i in range(length):
+        rec = {'kind': 'sample', 't': t_offset, 'call': call_id, 'n': i + 1}
         if i < len(beacons):
             bt, bp = beacons[i]
             rec['beacons'] = [{'id': '16f397ca5f51f271', 'p': bp}]
-        if i < len(eagle):
-            et, ep = eagle[i]
-            rec['eagles'] = [{'id': '2ea01cb1676aca29', 'p': ep, 'pose': True}]
-            rec['t'] = max(rec['t'], et)
+            rec['t'] = max(rec['t'], t_offset + bt)
+        for track in eagles:
+            if i < len(track):
+                et, ep = track[i]
+                rec['eagles'] = rec.get('eagles', []) + [
+                    {'id': '2ea01cb1676aca29', 'p': ep, 'pose': True}]
+                rec['t'] = max(rec['t'], t_offset + et)
         lines.append(rec)
+    lines.append({'kind': 'call_end', 't': t_offset + 4.0, 'call': call_id,
+                  'note': 'timeout'})
 
-    lines.append({'kind': 'call_end', 't': 4.0, 'call': 1, 'note': 'timeout'})
+
+def emit(path, scenario):
+    lines = [{'kind': 'capabilities', 't': 0,
+              'note': 'Application=table, World=table, Unit=table, Vector3=table'}]
+
+    if scenario == 'h1':
+        # Perpendicular to the player->beacon line: north/south, 600 m long.
+        emit_call(lines, 1, [eagle_track([38.0, -300.0, UP_Z], [42.0, 300.0, UP_Z + 0.5])])
+    elif scenario == 'h2':
+        # Along that line: east/west.
+        emit_call(lines, 1, [eagle_track([-300.0, -2.0, UP_Z], [300.0, 2.0, UP_Z + 0.5])])
+    else:
+        # What obstacle avoidance should look like: one clean call on the
+        # perpendicular, then one deflected well off it (and a third, clean again,
+        # so the reader can see the deflection is the exception rather than the rule).
+        clean = [[38.0, -300.0, UP_Z], [42.0, 300.0, UP_Z + 0.5]]
+        emit_call(lines, 1, [eagle_track(clean[0], clean[1])])
+        emit_call(lines, 2, [rotated_track(clean[0], clean[1], 55.0)], t_offset=10.0)
+        emit_call(lines, 3, [eagle_track(clean[0], clean[1])], t_offset=20.0)
 
     with open(path, 'w', encoding='utf-8') as fh:
         for rec in lines:
@@ -83,7 +111,7 @@ def emit(path, scenario):
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('--scenario', required=True, choices=('h1', 'h2'))
+    ap.add_argument('--scenario', required=True, choices=('h1', 'h2', 'mixed'))
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
     emit(args.out, args.scenario)

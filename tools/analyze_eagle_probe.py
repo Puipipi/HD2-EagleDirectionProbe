@@ -12,6 +12,15 @@ It fits two hypotheses against the measured geometry:
       (if true, a prediction mod must read the aircraft, and its lead time is
        whatever the gap is between first sighting and impact)
 
+A third cause of deviation must be ruled out before H2 is believed. Reported by the
+user as game mechanics, and NOT yet verified here: **the Eagle avoids obstacles, so
+its approach direction changes when something is in the way.** The consequence for
+reading this output is the important part - a small residual is evidence for H1, but
+a large residual is NOT automatically evidence against it, because it may be a single
+perturbed call. The verdict below therefore distinguishes a tight cluster near zero
+(H1 holds wherever the aircraft is not deflected) from a scatter that tracks nothing,
+instead of counting matches.
+
 Nothing here is a verdict on its own: it prints the residuals for both, per call and
 pooled, so the numbers decide.
 
@@ -185,6 +194,81 @@ def analyze_call(call_id, records, up):
     return out
 
 
+def classify_verdict(usable):
+    """Turn the per-call residuals into a labelled reading.
+
+    Kept out of main() so the obstacle-avoidance branch is testable: the tests
+    assert the label, not the prose.
+
+    Labels:
+      'none'  no call produced both tracks, so nothing is decided
+      'h1'    every call sits near the perpendicular
+      'mixed' some calls on the perpendicular and some deflected - the signature
+              obstacle avoidance predicts, and NOT evidence against H1
+      'h2'    nothing clusters near zero, so the geometry is not what drives it
+    """
+    if not usable:
+        return {'label': 'none', 'errors': [], 'lines': [
+            'VERDICT: no call produced both a beacon track and an Eagle track.',
+            '         Nothing is decided yet - re-run with more calls, or turn on',
+            '         FALLBACK_WORLD_SCAN if the Eagle was never listed.']}
+
+    errors = [r['h1_error_best_deg'] for r in usable]
+    matches = sum(1 for r in usable if r['h1_axis_matches'])
+    tight = [e for e in errors if e <= 20.0]
+    loose = [e for e in errors if e > 20.0]
+    leads = [r['eagle_first_seen_s'] for r in usable]
+    spread = max(errors) - min(errors)
+
+    lines = [
+        'VERDICT over %d measurable call(s):' % len(usable),
+        '  H1 matched in %d of %d' % (matches, len(usable)),
+        '  H1 error: mean %.1f deg, range %.1f..%.1f deg'
+        % (sum(errors) / len(errors), min(errors), max(errors)),
+        '  residuals: %s' % ', '.join('%.1f' % e for e in sorted(errors)),
+    ]
+    if loose:
+        lines += [
+            '  NOTE: %d call(s) deviate by more than 20 deg. The Eagle is reported'
+            % len(loose),
+            '        to avoid obstacles, so before reading those as evidence against',
+            '        H1, check whether that call was aimed toward cover. Ask the',
+            '        player; the probe cannot see terrain.',
+        ]
+
+    if matches == len(usable) and spread < 25.0:
+        label = 'h1'
+        lines += [
+            '  -> H1 consistent with the data: every call sits close to the'
+            ' perpendicular.',
+            '     The axis looks computable at throw time from the player and the',
+            '     beacon, which is what a prediction mod needs. Confirm with a second',
+            '     mission before building.',
+        ]
+    elif tight and loose:
+        label = 'mixed'
+        lines += [
+            '  -> MIXED, which is the shape obstacle avoidance predicts: some calls',
+            '     land on the perpendicular and some are deflected. That supports H1',
+            '     as the NOMINAL rule, with the deflection as a separate second effect',
+            '     a prediction mod must either ignore (and be wrong near cover) or',
+            '     model. Get the player to say which calls were near cover before',
+            '     concluding anything.',
+        ]
+    else:
+        label = 'h2'
+        lines += [
+            '  -> H1 is NOT supported: the residuals do not cluster near zero at all.',
+            '     Look at the aircraft forward vector and at the idle_eagle samples:',
+            '     the axis may follow the aircraft\'s own live heading, which changes',
+            '     the design - read the aircraft, not the geometry.',
+        ]
+
+    lines.append('  Lead time (first sighting -> beacon settled): %.2f..%.2f s'
+                 % (min(leads), max(leads)))
+    return {'label': label, 'errors': errors, 'lines': lines}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('jsonl')
@@ -242,35 +326,15 @@ def main():
 
     usable = [r for r in results if 'measured_axis_deg' in r]
     print()
-    if not usable:
-        print('VERDICT: no call produced both a beacon track and an Eagle track.')
-        print('         Nothing is decided yet - re-run with more calls, or turn on')
-        print('         FALLBACK_WORLD_SCAN if the Eagle was never listed.')
-    else:
-        matches = sum(1 for r in usable if r['h1_axis_matches'])
-        errors = [r['h1_error_best_deg'] for r in usable]
-        mean = sum(errors) / len(errors)
-        spread = max(errors) - min(errors)
-        print('VERDICT over %d measurable call(s):' % len(usable))
-        print('  H1 matched in %d of %d' % (matches, len(usable)))
-        print('  H1 error: mean %.1f deg, range %.1f..%.1f deg'
-              % (mean, min(errors), max(errors)))
-        if matches == len(usable) and spread < 25.0:
-            print('  -> H1 consistent with the data. The axis looks computable at throw')
-            print('     time from the player and the beacon, which is what a prediction')
-            print('     mod needs. Confirm with a second mission before building.')
-        else:
-            print('  -> H1 is NOT cleanly supported. Look at the aircraft forward')
-            print('     vector and at the idle_eagle samples: the axis may follow the')
-            print('     aircraft\'s own live heading, which changes the design.')
-        leads = [r['eagle_first_seen_s'] for r in usable]
-        print('  Lead time (first sighting -> beacon settled): %.2f..%.2f s'
-              % (min(leads), max(leads)))
+    verdict = classify_verdict(usable)
+    for line in verdict['lines']:
+        print(line)
 
     if args.json:
         with open(args.json, 'w', encoding='utf-8') as fh:
             json.dump({'vertical_axis': up, 'axis_choice': up_why,
-                       'calls': results}, fh, indent=1)
+                       'verdict': verdict['label'], 'calls': results},
+                      fh, indent=1)
         print('\nwrote %s' % args.json)
     return 0
 

@@ -77,6 +77,32 @@ class AnalyzerDiscriminationTest(unittest.TestCase):
             up, why, _ = analyze_fixture(name)
             self.assertEqual(up, 'z', '%s: axis choice was %s (%s)' % (name, up, why))
 
+    def test_verdict_labels(self):
+        _, _, h1 = analyze_fixture('h1.jsonl')
+        _, _, h2 = analyze_fixture('h2.jsonl')
+        self.assertEqual(analyzer.classify_verdict(h1)['label'], 'h1')
+        self.assertEqual(analyzer.classify_verdict(h2)['label'], 'h2')
+
+    def test_deflected_call_is_not_read_as_evidence_against_h1(self):
+        """The reported obstacle-avoidance mechanic must not corrupt the verdict.
+
+        One clean call plus one deflected call is what avoidance looks like. Reading
+        it as "H1 does not hold" would throw away a working rule, so the classifier
+        has to have a label for exactly this shape.
+        """
+        _, _, rows = analyze_fixture('mixed.jsonl')
+        self.assertEqual(len(rows), 3)
+        errors = [r['h1_error_best_deg'] for r in rows]
+        self.assertTrue(any(e <= 20.0 for e in errors), 'no clean call in the fixture')
+        self.assertTrue(any(e > 20.0 for e in errors), 'no deflected call in the fixture')
+        verdict = analyzer.classify_verdict(rows)
+        self.assertEqual(verdict['label'], 'mixed')
+        self.assertTrue(any('obstacle' in line.lower() for line in verdict['lines']),
+                        'the reading must name the obstacle mechanic')
+
+    def test_verdict_handles_no_usable_calls(self):
+        self.assertEqual(analyzer.classify_verdict([])['label'], 'none')
+
 
 class SourceGateTest(unittest.TestCase):
     """The source must clear the packaging gates before anything is built."""

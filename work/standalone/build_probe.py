@@ -63,9 +63,15 @@ IT DOES NOT CHANGE ANYTHING
 
 HOW TO USE
   1. Enable this mod and Bingus Shared Loader. Deploy. Start a mission.
-  2. Call any Eagle stratagem (Airstrike, 500kg, Strafing Run, Cluster, Napalm,
-     Smoke, Gas, 110mm Rocket Pods) three or four times, from different angles.
-  3. Leave the mission. The probe flushes on shutdown.
+  2. Call any Eagle stratagem (Airstrike, Cluster, Napalm, Strafing Run, Smoke,
+     Gas, 110mm Rocket Pods) three or four times, FROM DIFFERENT ANGLES - vary the
+     player-to-beacon bearing, or the analysis cannot tell the two candidate rules
+     apart. 500kg is a single bomb with no run axis, so do not rely on it alone.
+  3. Prefer OPEN TERRAIN for the baseline: the Eagle is reported to avoid
+     obstacles, and a deflection would otherwise be mistaken for the rule being
+     wrong. If you want to see that avoidance, deliberately call one strike toward
+     a large piece of cover and remember which call it was.
+  4. Leave the mission. The probe flushes on shutdown.
 
 WHERE THE RESULTS GO
   %LOCALAPPDATA%\\CowboyBingus\\Helldivers2\\Logs\\EagleDirectionProbe.jsonl
@@ -87,6 +93,13 @@ IF THE EAGLE IS NEVER LISTED
   is live - it exists because the resource query is known to return an empty table
   for some units that do exist, and because walking the whole world while reading
   every position has crashed this game before.
+
+IF A CALL LOOKS "WRONG"
+  The Eagle is reported to avoid obstacles, so its approach direction changes when
+  something is in the way. That means a strike that does not match the geometry is
+  not automatically evidence that the geometry is wrong - it may be one deflected
+  call. Note which calls were aimed toward large cover; the analyzer needs that
+  from you, because the probe cannot see terrain.
 """.format(version=VERSION)
 
 
