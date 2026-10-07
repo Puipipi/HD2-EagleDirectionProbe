@@ -1,19 +1,21 @@
 """Offline checks for the Eagle Direction Probe.
 
-Two kinds of check, and they fail for different reasons on purpose:
+Three kinds of check, and they fail for different reasons on purpose:
 
-* the analyzer must SEPARATE a case it should accept from one it should reject. A
-  tool that reports "consistent" for both fixtures is not evidence, so the two
-  synthetic fixtures disagree by construction and the test asserts they land far
-  apart, not merely that one passes.
-* the addon source must pass the packaging gates (LuaJIT compile, no user32 in
-  ffi.cdef, declaration matches the resource name).
+* the analyzer must name a DIFFERENT rule for the strafing-run fixture than for the
+  cluster fixture. A tool that reports the same rule for both has no discriminating
+  power, and its readings on a real log would mean nothing.
+* a deflected call must come back as a deflection, not as the rule being wrong - the
+  player reports that the Eagle avoids obstacles, so a miss is not automatically
+  evidence against a rule.
+* the addon source must clear the packaging gates, and it must stay read-only.
 
 No game, no network, no writes outside the repo. Run:
 
     python -m unittest discover -s tests -v
 """
 import importlib.util
+import re
 import subprocess
 import sys
 import unittest
@@ -22,6 +24,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 FIXTURES = REPO / 'tests' / 'fixtures'
 ANALYZER_PATH = REPO / 'tools' / 'analyze_eagle_probe.py'
+SOURCE_PATH = REPO / 'src' / 'eagle_direction_probe.lua'
 BUILD_SCRIPT = REPO / 'work' / 'standalone' / 'build_probe.py'
 
 
@@ -35,73 +38,152 @@ def load_analyzer():
 analyzer = load_analyzer()
 
 
-def analyze_fixture(name):
+def analyze_fixture(name, labels=None):
     records = analyzer.load(str(FIXTURES / name))
     up, why = analyzer.choose_up(records, 'auto')
     calls = sorted({r['call'] for r in records if r.get('call')})
-    rows = [analyzer.analyze_call(call, [r for r in records if r.get('call') == call], up)
+    rows = [analyzer.analyze_call(call, [r for r in records if r.get('call') == call],
+                                  up, (labels or {}).get(str(call)))
             for call in calls]
     return up, why, rows
 
 
-class AnalyzerDiscriminationTest(unittest.TestCase):
-    """The analyzer must accept H1-shaped data and reject non-H1-shaped data."""
+class PerStratagemRuleTest(unittest.TestCase):
+    """Each Eagle stratagem gets its own rule, and the answers differ."""
 
-    def test_h1_fixture_is_accepted(self):
-        up, _, rows = analyze_fixture('h1.jsonl')
-        self.assertEqual(len(rows), 1)
-        row = rows[0]
-        self.assertIn('measured_axis_deg', row)
-        self.assertTrue(row['h1_axis_matches'],
-                        'H1 fixture should match, error was %s' % row.get('h1_error_best_deg'))
-        self.assertLess(row['h1_error_best_deg'], 5.0)
-
-    def test_h2_fixture_is_rejected(self):
-        _, _, rows = analyze_fixture('h2.jsonl')
-        row = rows[0]
-        self.assertIn('measured_axis_deg', row)
-        self.assertFalse(row['h1_axis_matches'],
-                         'h2 fixture must NOT be reported as an H1 match')
-        self.assertGreater(row['h1_error_best_deg'], 60.0)
-
-    def test_the_two_fixtures_are_far_apart(self):
-        """Guards against a regression that makes every input look like a match."""
-        _, _, h1 = analyze_fixture('h1.jsonl')
-        _, _, h2 = analyze_fixture('h2.jsonl')
-        separation = abs(h2[0]['h1_error_best_deg'] - h1[0]['h1_error_best_deg'])
-        self.assertGreater(separation, 60.0,
-                           'the analyzer no longer separates accept from reject')
-
-    def test_vertical_axis_is_auto_detected(self):
-        for name in ('h1.jsonl', 'h2.jsonl'):
-            up, why, _ = analyze_fixture(name)
-            self.assertEqual(up, 'z', '%s: axis choice was %s (%s)' % (name, up, why))
-
-    def test_verdict_labels(self):
-        _, _, h1 = analyze_fixture('h1.jsonl')
-        _, _, h2 = analyze_fixture('h2.jsonl')
-        self.assertEqual(analyzer.classify_verdict(h1)['label'], 'h1')
-        self.assertEqual(analyzer.classify_verdict(h2)['label'], 'h2')
-
-    def test_deflected_call_is_not_read_as_evidence_against_h1(self):
-        """The reported obstacle-avoidance mechanic must not corrupt the verdict.
-
-        One clean call plus one deflected call is what avoidance looks like. Reading
-        it as "H1 does not hold" would throw away a working rule, so the classifier
-        has to have a label for exactly this shape.
-        """
-        _, _, rows = analyze_fixture('mixed.jsonl')
-        self.assertEqual(len(rows), 3)
-        errors = [r['h1_error_best_deg'] for r in rows]
-        self.assertTrue(any(e <= 20.0 for e in errors), 'no clean call in the fixture')
-        self.assertTrue(any(e > 20.0 for e in errors), 'no deflected call in the fixture')
+    def test_strafing_resolves_to_along_from_behind(self):
+        _, _, rows = analyze_fixture('strafing.jsonl')
+        self.assertEqual(rows[0]['stratagem'], 'strafing_run',
+                         'the munition identity should name the stratagem')
         verdict = analyzer.classify_verdict(rows)
-        self.assertEqual(verdict['label'], 'mixed')
+        self.assertEqual(verdict['label'], 'rules_resolved')
+        group = verdict['groups']['strafing_run']
+        self.assertEqual(group['best_rule'], 'along_from_behind')
+        self.assertEqual(group['verdict'], 'fits')
+        self.assertLess(group['mean_abs_error_deg'], 5.0)
+
+    def test_cluster_resolves_to_a_perpendicular_rule(self):
+        _, _, rows = analyze_fixture('cluster.jsonl')
+        self.assertEqual(rows[0]['stratagem'], 'cluster')
+        verdict = analyzer.classify_verdict(rows)
+        self.assertEqual(verdict['label'], 'rules_resolved')
+        group = verdict['groups']['cluster']
+        self.assertIn(group['best_rule'], ('perp_left', 'perp_right'))
+        self.assertLess(group['mean_abs_error_deg'], 5.0)
+
+    def test_the_two_stratagems_do_not_resolve_to_the_same_rule(self):
+        """This is the discrimination test: same analyzer, different answers."""
+        _, _, strafing = analyze_fixture('strafing.jsonl')
+        _, _, cluster = analyze_fixture('cluster.jsonl')
+        a = analyzer.classify_verdict(strafing)['groups']['strafing_run']['best_rule']
+        b = analyzer.classify_verdict(cluster)['groups']['cluster']['best_rule']
+        self.assertNotEqual(a, b, 'the analyzer cannot tell the two rules apart')
+
+    def test_deflected_call_reads_as_deflection_not_as_a_wrong_rule(self):
+        _, _, rows = analyze_fixture('deflected.jsonl')
+        verdict = analyzer.classify_verdict(rows)
+        self.assertEqual(verdict['label'], 'rules_with_deflection')
+        group = verdict['groups']['strafing_run']
+        self.assertEqual(group['best_rule'], 'along_from_behind')
+        self.assertEqual(group['verdict'], 'mixed')
+        self.assertEqual(group['tight_calls'], 1)
+        self.assertEqual(group['deflected_calls'], 1)
         self.assertTrue(any('obstacle' in line.lower() for line in verdict['lines']),
                         'the reading must name the obstacle mechanic')
 
     def test_verdict_handles_no_usable_calls(self):
         self.assertEqual(analyzer.classify_verdict([])['label'], 'none')
+
+    def test_vertical_axis_is_auto_detected(self):
+        for name in ('strafing.jsonl', 'cluster.jsonl', 'deflected.jsonl'):
+            up, why, _ = analyze_fixture(name)
+            self.assertEqual(up, 'z', '%s: axis choice was %s (%s)' % (name, up, why))
+
+    def test_explicit_labels_override_the_detected_munition(self):
+        _, _, rows = analyze_fixture('cluster.jsonl', {'1': 'my_own_name'})
+        self.assertEqual(rows[0]['stratagem'], 'my_own_name')
+
+    def test_parse_labels(self):
+        self.assertEqual(analyzer.parse_labels('1=a,2=b'), {'1': 'a', '2': 'b'})
+        self.assertEqual(analyzer.parse_labels(None), {})
+        self.assertEqual(analyzer.parse_labels(' 3 = c '), {'3': 'c'})
+        with self.assertRaises(SystemExit):
+            analyzer.parse_labels('nonsense')
+
+
+class PreRegisteredFamilyTest(unittest.TestCase):
+    """The reported families must be falsifiable, not read against whatever fits."""
+
+    def test_strafing_fixture_confirms_the_parallel_family(self):
+        _, _, rows = analyze_fixture('strafing.jsonl')
+        group = analyzer.classify_verdict(rows)['groups']['strafing_run']
+        self.assertEqual(group['expected_rules'], ['along_from_behind'])
+        self.assertEqual(group['agreement'], 'confirms')
+
+    def test_cluster_fixture_confirms_the_perpendicular_family(self):
+        _, _, rows = analyze_fixture('cluster.jsonl')
+        group = analyzer.classify_verdict(rows)['groups']['cluster']
+        self.assertEqual(group['expected_rules'], ['perp_left', 'perp_right'])
+        self.assertEqual(group['agreement'], 'confirms')
+
+    def test_a_wrong_rule_is_reported_as_contradicting(self):
+        """If the strafing run measured as perpendicular, that must be flagged."""
+        self.assertNotIn('perp_left', analyzer.EXPECTED_RULES['strafing_run'])
+        self.assertNotIn('along_from_behind', analyzer.EXPECTED_RULES['cluster'])
+
+    def test_expectation_lookup(self):
+        self.assertEqual(analyzer.expectation_for('strafing_run'),
+                         ('along_from_behind',))
+        self.assertEqual(analyzer.expectation_for('cluster'),
+                         ('perp_left', 'perp_right'))
+        # Compound labels (the strafing run has two munition identities) are the union.
+        self.assertEqual(analyzer.expectation_for('eagle_gunpods'), None,
+                         'raw munition names are not families and must not be guessed')
+        self.assertIsNone(analyzer.expectation_for('unknown_stratagem'))
+        self.assertIsNone(analyzer.expectation_for(''))
+        self.assertIn('gas', analyzer.EXTRAPOLATED,
+                      'the gas airstrike was not in the 2024 source; say so')
+
+
+def lua_table_block(name):
+    """The body of a top-level `local NAME = { ... }` table from the addon source.
+
+    Splits on a closing brace at the start of a line, not on the first brace, because
+    entries of these tables are themselves braced.
+    """
+    text = SOURCE_PATH.read_text(encoding='utf-8')
+    marker = 'local %s = {' % name
+    if marker not in text:
+        raise AssertionError('%s not found in the addon source' % marker)
+    return text.split(marker, 1)[1].split('\n}', 1)[0]
+
+
+class MunitionMapDriftTest(unittest.TestCase):
+    """The Lua and Python copies of the munition-to-stratagem map must agree.
+
+    They are two hand-written tables that have to stay identical; a drift would make
+    the analyzer name a different stratagem than the probe recorded, silently.
+    """
+
+    def test_python_mirror_matches_the_lua_table(self):
+        block = lua_table_block('STRATAGEM_OF')
+        pairs = {}
+        for line in block.splitlines():
+            # Accepts both 'key = value' and "['key'] = value" spellings.
+            match = re.match(
+                r"\s*(?:\[\s*'([a-z0-9_]+)'\s*\]|([a-z0-9_]+))\s*=\s*'([a-z0-9_]+)'",
+                line)
+            if match:
+                pairs[match.group(1) or match.group(2)] = match.group(3)
+        self.assertTrue(pairs, 'could not parse STRATAGEM_OF out of the Lua source')
+        self.assertEqual(pairs, analyzer.STRATAGEM_OF,
+                         'the Lua and Python munition maps have drifted apart')
+
+    def test_probe_queries_a_key_for_every_mapped_munition(self):
+        queried = set(re.findall(r"src = '([a-z0-9_]+)'", lua_table_block('QUERY_KEYS')))
+        self.assertTrue(queried, 'could not parse QUERY_KEYS out of the Lua source')
+        self.assertEqual(queried, set(analyzer.STRATAGEM_OF),
+                         'QUERY_KEYS and STRATAGEM_OF cover different identities')
 
 
 class SourceGateTest(unittest.TestCase):
@@ -123,7 +205,7 @@ class ReadOnlyContractTest(unittest.TestCase):
     """The addon must not contain a write path. This is the whole safety claim."""
 
     def setUp(self):
-        self.source = (REPO / 'src' / 'eagle_direction_probe.lua').read_text(encoding='utf-8')
+        self.source = SOURCE_PATH.read_text(encoding='utf-8')
 
     def test_no_engine_write_calls(self):
         for forbidden in ('Unit.set_local_position', 'Unit.set_local_rotation',

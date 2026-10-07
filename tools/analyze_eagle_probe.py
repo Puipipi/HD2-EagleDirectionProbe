@@ -1,31 +1,36 @@
 """Offline analyzer for the Eagle direction probe's JSONL.
 
-THROWAWAY SPIKE TOOL. Reads the probe log and answers one question: is the Eagle's
-incoming direction predictable from things already readable at call time, or does it
-depend on the aircraft's own live state?
+Reads the probe log and answers one question: for each Eagle stratagem, is the
+aircraft's incoming direction predictable from things already readable at call time?
 
-It fits two hypotheses against the measured geometry:
+Why this is per-stratagem and not one rule. The player reports that different Eagle
+stratagems have different DEFAULT approach directions - the strafing run comes along
+the player-to-beacon line from behind the player, the cluster bomb comes
+perpendicular from the left - and that the aircraft additionally defends itself,
+changing direction when something is in the way. A single pooled hypothesis would
+therefore reject a rule that is working for one stratagem and not another, so the
+four candidate rules below are fitted separately for each stratagem label.
 
-  H1  the run axis is perpendicular to the player->beacon line
-      (the community claim; if true, an arrow can be drawn at throw time)
-  H2  the run axis is the aircraft's own heading, unrelated to that line
-      (if true, a prediction mod must read the aircraft, and its lead time is
-       whatever the gap is between first sighting and impact)
+Candidate rules (B = bearing from the player to where the beacon landed):
 
-A third cause of deviation must be ruled out before H2 is believed. Reported by the
-user as game mechanics, and NOT yet verified here: **the Eagle avoids obstacles, so
-its approach direction changes when something is in the way.** The consequence for
-reading this output is the important part - a small residual is evidence for H1, but
-a large residual is NOT automatically evidence against it, because it may be a single
-perturbed call. The verdict below therefore distinguishes a tight cluster near zero
-(H1 holds wherever the aircraft is not deflected) from a scatter that tracks nothing,
-instead of counting matches.
+  along_from_behind   heading = B        the aircraft comes from behind the player
+                                         and runs forward past them  (strafing run)
+  along_from_front    heading = B + 180  the same line, approached from the far end
+  perp_left           heading = B + 90   perpendicular, travelling one way
+  perp_right          heading = B - 90   perpendicular, the other way
 
-Nothing here is a verdict on its own: it prints the residuals for both, per call and
-pooled, so the numbers decide.
+Which of perp_left/perp_right is the player's actual left depends on the engine's
+axis handedness, which we have not established, so BOTH signs are tested and the
+data decides. Do not read the names as more than labels until a run says which one
+matches: that is itself one of the findings.
+
+Obstacle avoidance means a large residual is NOT automatically evidence against a
+rule - it may be one deflected call. Groups that contain both tight and loose calls
+are labelled separately instead of being averaged into "does not fit".
 
 Usage:
   python analyze_eagle_probe.py <probe.jsonl> [--json out.json] [--up auto|z|y]
+  python analyze_eagle_probe.py <probe.jsonl> --stratagems "1=strafing_run,2=cluster"
 """
 import argparse
 import json
@@ -37,6 +42,79 @@ import sys
 # and report the choice, and allow an override.
 UP_CANDIDATES = ('z', 'y', 'x')
 AXIS_INDEX = {'x': 0, 'y': 1, 'z': 2}
+
+# Mirror of the probe's STRATAGEM_OF: which stratagem a munition identity implies.
+STRATAGEM_OF = {
+    'eagle_airstrike': 'airstrike',
+    'eagle_cluster': 'cluster',
+    'eagle_napalm': 'napalm',
+    'eagle_smoke': 'smoke',
+    'eagle_gas': 'gas',
+    'eagle_500kg': '500kg',
+    'eagle_rocket': '110mm_rocket_pods',
+    'eagle_gunpods': 'strafing_run',
+    'eagle_base': 'strafing_run',
+    'eagle_missile': 'air_to_air',
+}
+
+RULES = ('along_from_behind', 'along_from_front', 'perp_left', 'perp_right')
+TIGHT_DEG = 20.0        # residuals at or below this count as "on the rule"
+
+# Pre-registered expectations, so a run FALSIFIES them instead of being read against
+# whatever happens to fit. Two sources, both describing the same two-family split:
+#
+#   player report (2026-10-07, current build)
+#     strafing run  - along the player-to-beacon line, coming from behind
+#     cluster bomb  - perpendicular, coming from the left
+#   9game.cn guide (2024-02-24 - LAUNCH-ERA, so possibly stale; see README)
+#     parallel family, from behind : strafing run, 110mm rocket pods, 500kg
+#     perpendicular family         : airstrike, cluster, napalm, smoke
+#
+# The guide's perpendicular family is described as diving "from east to west" with
+# the side depending on where the player faces, so WHICH of perp_left / perp_right
+# matches is deliberately not pre-registered - that is itself a finding, and
+# perp_left is only a label until a run says whether it is really the player's left.
+#
+# 'gas' is extrapolated: the gas airstrike did not exist in the 2024 guide, and it is
+# an airstrike variant, so the perpendicular family is a guess, not a source.
+EXPECTED_RULES = {
+    'strafing_run': ('along_from_behind',),
+    '110mm_rocket_pods': ('along_from_behind',),
+    '500kg': ('along_from_behind',),
+    'airstrike': ('perp_left', 'perp_right'),
+    'cluster': ('perp_left', 'perp_right'),
+    'napalm': ('perp_left', 'perp_right'),
+    'smoke': ('perp_left', 'perp_right'),
+    'gas': ('perp_left', 'perp_right'),
+}
+EXTRAPOLATED = ('gas',)
+
+
+def expectation_for(stratagem):
+    """Expected rules for a group label, or None when nothing is pre-registered.
+
+    Labels can be compound (the strafing run spawns two munition identities), so any
+    unrecognised part makes the whole group unregistered rather than half-checked.
+    """
+    parts = [p for p in (stratagem or '').split('+') if p]
+    if not parts:
+        return None
+    found = []
+    for part in parts:
+        if part not in EXPECTED_RULES:
+            return None
+        found.extend(EXPECTED_RULES[part])
+    return tuple(sorted(set(found)))
+
+
+def predict_heading(rule, line_bearing):
+    if rule == 'along_from_behind':
+        return line_bearing
+    if rule == 'along_from_front':
+        return line_bearing + 180.0
+    if rule == 'perp_left':
+        return line_bearing + 90.0
+    return line_bearing - 90.0
 
 
 def bearing(dx, dy):
@@ -90,7 +168,7 @@ def choose_up(records, forced):
 
 
 def tracks(records, key, up):
-    """Per-unit track of (t, point) from sample and idle records."""
+    """Per-unit track of (t, point, forward) from sample and idle records."""
     out = {}
     for rec in records:
         if rec.get('kind') not in ('sample', 'idle_eagle'):
@@ -98,14 +176,15 @@ def tracks(records, key, up):
         for unit in rec.get(key) or []:
             if 'p' not in unit:
                 continue
-            out.setdefault(unit['id'], []).append((rec.get('t', 0.0), unit['p'], unit.get('f')))
+            out.setdefault(unit['id'], []).append(
+                (rec.get('t', 0.0), unit['p'], unit.get('f')))
     for rows in out.values():
         rows.sort(key=lambda r: r[0])
     return out
 
 
 def track_direction(rows, up):
-    """Mean horizontal direction of travel, weighted by distance moved."""
+    """Mean horizontal direction of travel and total horizontal distance."""
     sx = sy = 0.0
     for (t0, p0, _), (t1, p1, _) in zip(rows, rows[1:]):
         if t1 - t0 <= 0:
@@ -136,7 +215,18 @@ def forward_direction(rows, up):
     return bearing(sx, sy)
 
 
-def analyze_call(call_id, records, up):
+def stratagems_seen(records):
+    """Stratagem families implied by the munition identities in this call."""
+    families = set()
+    for rec in records:
+        for unit in rec.get('eagles') or []:
+            family = STRATAGEM_OF.get(unit.get('src'))
+            if family:
+                families.add(family)
+    return sorted(families)
+
+
+def analyze_call(call_id, records, up, label=None):
     beacons = tracks(records, 'beacons', up)
     eagles = tracks(records, 'eagles', up)
 
@@ -149,28 +239,29 @@ def analyze_call(call_id, records, up):
 
     origin = beacon_rows[0]
     settled = beacon_rows[-1]
-    throw_bearing, throw_len = track_direction(beacon_rows, up)
+    throw_bearing, _ = track_direction(beacon_rows, up)
     line_bearing = bearing(
         horizontal(settled[1], up)[0] - horizontal(origin[1], up)[0],
         horizontal(settled[1], up)[1] - horizontal(origin[1], up)[1])
+
+    out = {
+        'call': call_id,
+        'status': 'ok',
+        'stratagem': label or '+'.join(stratagems_seen(records)) or 'unknown',
+        'throw_origin': origin[1],
+        'beacon_landing': settled[1],
+        'throw_bearing_deg': round(throw_bearing, 2) if throw_bearing is not None else None,
+        'player_to_beacon_bearing_deg': round(line_bearing, 2),
+        'samples': len(beacon_rows),
+        'duration_s': round(beacon_rows[-1][0] - beacon_rows[0][0], 3),
+    }
+    for rule in RULES:
+        out['predicted_%s_deg' % rule] = round(norm180(predict_heading(rule, line_bearing)), 2)
 
     eagle_rows = None
     for _, rows in eagles.items():
         if eagle_rows is None or len(rows) > len(eagle_rows):
             eagle_rows = rows
-
-    out = {
-        'call': call_id,
-        'status': 'ok',
-        'throw_origin': origin[1],
-        'beacon_landing': settled[1],
-        'throw_bearing_deg': throw_bearing,
-        'player_to_beacon_bearing_deg': line_bearing,
-        'h1_predicted_axis_deg': norm180(line_bearing + 90.0),
-        'h1_predicted_axis_also_deg': norm180(line_bearing - 90.0),
-        'samples': len(beacon_rows),
-        'duration_s': round(beacon_rows[-1][0] - beacon_rows[0][0], 3),
-    }
     if not eagle_rows or len(eagle_rows) < 2:
         out['eagle'] = 'not seen in this call'
         return out
@@ -181,92 +272,174 @@ def analyze_call(call_id, records, up):
     out['eagle_visible_for_s'] = round(eagle_rows[-1][0] - eagle_rows[0][0], 3)
     out['eagle_travel_m_horizontal'] = round(travelled, 2)
     out['eagle_forward_deg'] = forward_direction(eagle_rows, up)
-    if measured is not None:
-        out['measured_axis_deg'] = measured
-        d_plus = norm180(measured - out['h1_predicted_axis_deg'])
-        d_minus = norm180(measured - out['h1_predicted_axis_also_deg'])
-        out['h1_error_plus_deg'] = round(d_plus, 2)
-        out['h1_error_minus_deg'] = round(d_minus, 2)
-        out['h1_error_best_deg'] = round(min(abs(d_plus), abs(d_minus)), 2)
-        out['h1_error_signed_deg'] = round(
-            d_plus if abs(d_plus) <= abs(d_minus) else d_minus, 2)
-        out['h1_axis_matches'] = out['h1_error_best_deg'] <= 20.0
+    if measured is None:
+        return out
+
+    out['measured_heading_deg'] = round(measured, 2)
+    errors = {}
+    for rule in RULES:
+        errors[rule] = round(norm180(measured - predict_heading(rule, line_bearing)), 2)
+    out['rule_errors_deg'] = errors
+    best = min(RULES, key=lambda r: abs(errors[r]))
+    out['best_rule'] = best
+    out['best_error_deg'] = abs(out['rule_errors_deg'][best])
     return out
 
 
 def classify_verdict(usable):
-    """Turn the per-call residuals into a labelled reading.
+    """Group the calls by stratagem and report which rule fits each one.
 
-    Kept out of main() so the obstacle-avoidance branch is testable: the tests
-    assert the label, not the prose.
+    Kept out of main() so the per-stratagem logic and the obstacle-avoidance branch
+    are testable: the tests assert the label and the per-group rule, not the prose.
 
     Labels:
-      'none'  no call produced both tracks, so nothing is decided
-      'h1'    every call sits near the perpendicular
-      'mixed' some calls on the perpendicular and some deflected - the signature
-              obstacle avoidance predicts, and NOT evidence against H1
-      'h2'    nothing clusters near zero, so the geometry is not what drives it
+      'none'                   no call produced both tracks
+      'rules_resolved'         every labelled group fits one rule tightly
+      'rules_with_deflection'  every group fits a rule, but some calls are deflected
+                               (the reported obstacle-avoidance signature)
+      'rules_unresolved'       the residuals do not cluster on any rule
     """
     if not usable:
-        return {'label': 'none', 'errors': [], 'lines': [
+        return {'label': 'none', 'groups': {}, 'lines': [
             'VERDICT: no call produced both a beacon track and an Eagle track.',
             '         Nothing is decided yet - re-run with more calls, or turn on',
             '         FALLBACK_WORLD_SCAN if the Eagle was never listed.']}
 
-    errors = [r['h1_error_best_deg'] for r in usable]
-    matches = sum(1 for r in usable if r['h1_axis_matches'])
-    tight = [e for e in errors if e <= 20.0]
-    loose = [e for e in errors if e > 20.0]
-    leads = [r['eagle_first_seen_s'] for r in usable]
-    spread = max(errors) - min(errors)
+    groups = {}
+    for row in usable:
+        groups.setdefault(row.get('stratagem') or 'unknown', []).append(row)
 
-    lines = [
-        'VERDICT over %d measurable call(s):' % len(usable),
-        '  H1 matched in %d of %d' % (matches, len(usable)),
-        '  H1 error: mean %.1f deg, range %.1f..%.1f deg'
-        % (sum(errors) / len(errors), min(errors), max(errors)),
-        '  residuals: %s' % ', '.join('%.1f' % e for e in sorted(errors)),
-    ]
-    if loose:
+    lines = ['VERDICT over %d measurable call(s), grouped by stratagem:' % len(usable)]
+    resolved, deflected, unresolved = [], [], []
+    summary = {}
+
+    for name in sorted(groups):
+        rows = groups[name]
+        tally = {}
+        for rule in RULES:
+            errs = [r['rule_errors_deg'][rule] for r in rows if 'rule_errors_deg' in r]
+            if errs:
+                tally[rule] = (sum(abs(e) for e in errs) / len(errs), errs)
+        if not tally:
+            lines.append('  %-22s no measured heading' % name)
+            continue
+        best_rule = min(tally, key=lambda r: tally[r][0])
+        mean_abs, errs = tally[best_rule]
+        tight = [e for e in errs if abs(e) <= TIGHT_DEG]
+        loose = [e for e in errs if abs(e) > TIGHT_DEG]
+        verdict = ('mixed' if (tight and loose) else
+                   'fits' if not loose else 'loose')
+        expected = expectation_for(name)
+        if expected is None:
+            agreement = 'unregistered'
+        elif best_rule in expected:
+            agreement = 'confirms'
+        else:
+            agreement = 'CONTRADICTS'
+        if name in EXTRAPOLATED and agreement == 'confirms':
+            agreement = 'confirms (extrapolated)'
+        summary[name] = {
+            'calls': len(rows),
+            'best_rule': best_rule,
+            'expected_rules': list(expected) if expected else None,
+            'agreement': agreement,
+            'mean_abs_error_deg': round(mean_abs, 1),
+            'signed_errors_deg': [round(e, 1) for e in errs],
+            'tight_calls': len(tight),
+            'deflected_calls': len(loose),
+            'verdict': verdict,
+        }
+        lines.append('  %-22s %-18s mean|err| %5.1f deg  signed %s  %s'
+                     % (name, best_rule, mean_abs,
+                        ', '.join('%.1f' % e for e in sorted(errs)), verdict))
+        if expected is not None:
+            if agreement.startswith('confirms'):
+                lines.append('  %-22s expected %s -> %s'
+                             % ('', '/'.join(expected), agreement))
+            else:
+                lines.append('  %-22s expected %s -> %s  (the pre-registered family'
+                             ' is wrong for this stratagem)' % ('', '/'.join(expected),
+                                                                agreement))
+        if verdict == 'mixed':
+            deflected.append(name)
+        elif verdict == 'fits':
+            resolved.append(name)
+        else:
+            unresolved.append(name)
+
+    confirmed = sorted(n for n in summary if summary[n]['agreement'].startswith('confirms'))
+    contradicted = sorted(n for n in summary if summary[n]['agreement'] == 'CONTRADICTS')
+    unregistered = sorted(n for n in summary if summary[n]['agreement'] == 'unregistered')
+    if confirmed or contradicted:
+        lines.append('')
+        lines.append('  Pre-registered families: %d confirmed, %d contradicted, '
+                     '%d unregistered'
+                     % (len(confirmed), len(contradicted), len(unregistered)))
+        if confirmed:
+            lines.append('    confirmed   : %s' % ', '.join(confirmed))
+        if contradicted:
+            lines.append('    CONTRADICTED: %s  <- the reported family does not hold '
+                         'for these' % ', '.join(contradicted))
+
+    if deflected:
         lines += [
-            '  NOTE: %d call(s) deviate by more than 20 deg. The Eagle is reported'
-            % len(loose),
-            '        to avoid obstacles, so before reading those as evidence against',
-            '        H1, check whether that call was aimed toward cover. Ask the',
-            '        player; the probe cannot see terrain.',
+            '',
+            '  -> DEFLECTION SIGNATURE in: %s' % ', '.join(deflected),
+            '     Those groups fit the rule on some calls and miss badly on others.',
+            '     The Eagle is reported to avoid obstacles, so ask the player which',
+            '     calls were aimed toward cover before reading the misses as evidence',
+            '     against the rule - the probe cannot see terrain.',
         ]
 
-    if matches == len(usable) and spread < 25.0:
-        label = 'h1'
+    if resolved and not deflected and not unresolved:
+        label = 'rules_resolved'
         lines += [
-            '  -> H1 consistent with the data: every call sits close to the'
-            ' perpendicular.',
-            '     The axis looks computable at throw time from the player and the',
-            '     beacon, which is what a prediction mod needs. Confirm with a second',
-            '     mission before building.',
+            '',
+            '  -> Every stratagem fits one rule tightly. That is the outcome a',
+            '     prediction mod wants: the direction is computable at throw time',
+            '     from the player and the beacon, per stratagem. Note which rule each',
+            '     name resolved to - and confirm on a second mission before building.',
         ]
-    elif tight and loose:
-        label = 'mixed'
+    elif deflected:
+        label = 'rules_with_deflection'
         lines += [
-            '  -> MIXED, which is the shape obstacle avoidance predicts: some calls',
-            '     land on the perpendicular and some are deflected. That supports H1',
-            '     as the NOMINAL rule, with the deflection as a separate second effect',
-            '     a prediction mod must either ignore (and be wrong near cover) or',
-            '     model. Get the player to say which calls were near cover before',
-            '     concluding anything.',
+            '',
+            '  -> The per-stratagem rules look real, with a deflection on top. A',
+            '     nominal-axis prediction mod would be right in the open and wrong',
+            '     near cover; reading the live aircraft instead returns the',
+            '     post-avoidance heading and is unaffected.',
         ]
     else:
-        label = 'h2'
+        label = 'rules_unresolved'
         lines += [
-            '  -> H1 is NOT supported: the residuals do not cluster near zero at all.',
-            '     Look at the aircraft forward vector and at the idle_eagle samples:',
-            '     the axis may follow the aircraft\'s own live heading, which changes',
-            '     the design - read the aircraft, not the geometry.',
+            '',
+            '  -> No rule fits. Look at eagle_forward_deg and at the idle_eagle',
+            '     samples: the heading may follow the aircraft\'s own state, which',
+            '     means reading the aircraft rather than computing from geometry.',
         ]
 
-    lines.append('  Lead time (first sighting -> beacon settled): %.2f..%.2f s'
-                 % (min(leads), max(leads)))
-    return {'label': label, 'errors': errors, 'lines': lines}
+    leads = [r['eagle_first_seen_s'] for r in usable if 'eagle_first_seen_s' in r]
+    if leads:
+        lines.append('')
+        lines.append('  Lead time (first sighting -> beacon settled): %.2f..%.2f s'
+                     % (min(leads), max(leads)))
+    return {'label': label, 'groups': summary, 'lines': lines}
+
+
+def parse_labels(text):
+    """'1=strafing_run,2=cluster' -> {'1': 'strafing_run', '2': 'cluster'}"""
+    out = {}
+    if not text:
+        return out
+    for chunk in text.split(','):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if '=' not in chunk:
+            raise SystemExit('--stratagems entries look like 1=cluster; got %r' % chunk)
+        call, name = chunk.split('=', 1)
+        out[call.strip()] = name.strip()
+    return out
 
 
 def main():
@@ -274,6 +447,9 @@ def main():
     ap.add_argument('jsonl')
     ap.add_argument('--json', default=None)
     ap.add_argument('--up', default='auto', choices=('auto', 'x', 'y', 'z'))
+    ap.add_argument('--stratagems', default=None,
+                    help='override or supply per-call stratagem names, '
+                         'e.g. "1=strafing_run,2=cluster"')
     args = ap.parse_args()
 
     records = load(args.jsonl)
@@ -281,18 +457,23 @@ def main():
         print('no records in %s' % args.jsonl)
         return 1
 
+    labels = parse_labels(args.stratagems)
     up, up_why = choose_up(records, args.up)
-    calls = sorted({r['call'] for r in records if r.get('kind') in ('sample', 'call_begin')
-                    and r.get('call')})
+    calls = sorted({r['call'] for r in records
+                    if r.get('kind') in ('sample', 'call_begin') and r.get('call')})
     caps = [r for r in records if r.get('kind') == 'capabilities']
     stops = [r for r in records if r.get('kind') == 'stopped']
+    seen = [r for r in records if r.get('kind') == 'call_stratagem']
 
     print('records            : %d' % len(records))
     print('vertical axis      : %s  (%s)' % (up, up_why))
     if caps:
         print('stingray on load   : %s' % caps[0].get('note'))
-    idle = [r for r in records if r.get('kind') == 'idle_eagle']
-    print('idle eagle samples : %d  (aircraft visible between calls?)' % len(idle))
+    print('idle eagle samples : %d  (aircraft visible between calls?)'
+          % len([r for r in records if r.get('kind') == 'idle_eagle']))
+    if seen:
+        print('stratagems named by the probe: %s'
+              % ', '.join(sorted({r.get('note', '?') for r in seen})))
     if stops:
         print('probe note         : %s' % stops[0].get('note'))
     print('calls detected     : %d' % len(calls))
@@ -300,31 +481,32 @@ def main():
     results = []
     for call_id in calls:
         subset = [r for r in records if r.get('call') == call_id]
-        results.append(analyze_call(call_id, subset, up))
+        results.append(analyze_call(call_id, subset, up, labels.get(str(call_id))))
 
     print()
     for row in results:
-        print('--- call %s ---' % row['call'])
+        print('--- call %s  [%s] ---' % (row['call'], row.get('stratagem', '?')))
         if row.get('status') != 'ok':
             print('   %s' % row.get('status'))
             continue
-        print('   player->beacon bearing : %.1f deg' % row['player_to_beacon_bearing_deg'])
-        print('   H1 predicts axis       : %.1f deg (or %.1f)'
-              % (row['h1_predicted_axis_deg'], row['h1_predicted_axis_also_deg']))
-        if 'measured_axis_deg' not in row:
-            print('   measured axis          : %s' % row.get('eagle'))
+        print('   player->beacon bearing : %.1f deg'
+              % row['player_to_beacon_bearing_deg'])
+        if 'measured_heading_deg' not in row:
+            print('   measured heading       : %s' % row.get('eagle'))
             continue
-        print('   MEASURED eagle axis    : %.1f deg' % row['measured_axis_deg'])
-        print('   H1 error               : %.1f deg (%s)'
-              % (row['h1_error_best_deg'],
-                 'MATCH' if row['h1_axis_matches'] else 'does not match'))
+        print('   MEASURED heading       : %.1f deg' % row['measured_heading_deg'])
+        for rule in RULES:
+            mark = '  <- best' if rule == row.get('best_rule') else ''
+            print('     %-18s predict %7.1f  err %7.1f%s'
+                  % (rule, row['predicted_%s_deg' % rule],
+                     row['rule_errors_deg'][rule], mark))
         print('   eagle first seen at    : +%.2fs after the throw' % row['eagle_first_seen_s'])
         print('   eagle visible for      : %.2fs, travelling %.1fm'
               % (row['eagle_visible_for_s'], row['eagle_travel_m_horizontal']))
         if row.get('eagle_forward_deg') is not None:
             print('   aircraft forward vector: %.1f deg' % row['eagle_forward_deg'])
 
-    usable = [r for r in results if 'measured_axis_deg' in r]
+    usable = [r for r in results if 'measured_heading_deg' in r]
     print()
     verdict = classify_verdict(usable)
     for line in verdict['lines']:
@@ -333,8 +515,8 @@ def main():
     if args.json:
         with open(args.json, 'w', encoding='utf-8') as fh:
             json.dump({'vertical_axis': up, 'axis_choice': up_why,
-                       'verdict': verdict['label'], 'calls': results},
-                      fh, indent=1)
+                       'verdict': verdict['label'], 'groups': verdict['groups'],
+                       'calls': results}, fh, indent=1)
         print('\nwrote %s' % args.json)
     return 0
 

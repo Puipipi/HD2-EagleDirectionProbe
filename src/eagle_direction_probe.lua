@@ -5,6 +5,16 @@
 -- the Eagle aircraft's ACTUAL incoming direction, and how does it relate to the
 -- player and to the stratagem beacon?
 --
+-- Why the answer is not a single rule. The player reports that different Eagle
+-- stratagems have different DEFAULT approach directions - the strafing run comes
+-- along the player-to-beacon line from behind the player, the cluster bomb comes
+-- perpendicular from the left - and that the aircraft additionally defends itself,
+-- changing direction when something is in the way. So the direction is a
+-- per-stratagem default plus a possible deflection, and a measurement that pools all
+-- Eagle calls under one hypothesis answers nothing. This probe therefore identifies
+-- WHICH stratagem each call was (see QUERY_KEYS) and records the raw geometry, so the
+-- per-stratagem rule and the deflection can be separated offline.
+--
 -- READ-ONLY CONTRACT (auditable, please check it rather than trust it):
 --   * no memory write of any kind appears in this file
 --   * no native game function that mutates state is called
@@ -38,18 +48,53 @@ rawset(_G, MOD_KEY, M)
 local EAGLE_RESOURCE = 'content/fac_helldivers/vehicles/eagle/eagle'
 local BEACON_HEX = '16f397ca5f51f271'   -- HUD_BTO catalog: {name="Beacon", resource_hex=...}
 
--- Entity GUIDs that the kill-feed / damage tables name as Eagle things. Used only by
--- the optional fallback scan, to recognise a unit without knowing its path.
-local EAGLE_GUIDS = {
-    ['0bd0f9d59048e9d1'] = 'eagle_gunpods',
-    ['1b3bcadabc7ef8d6'] = 'eagle_airstrike_smoke',
-    ['23a60681dd4383ec'] = 'eagle_base',
-    ['27bb558c893383cc'] = 'eagle_napalm',
-    ['2ea01cb1676aca29'] = 'eagle_airstrike',
-    ['397792815583da29'] = 'eagle_rocket',
-    ['dfbb9a0d8fa27d85'] = 'eagle_missile',
-    ['e44b691dc039a505'] = 'eagle_bomb',
+-- Every identity this probe asks the world about.
+--
+-- The aircraft alone is not enough: different Eagle stratagems are reported to have
+-- DIFFERENT default approach directions (strafing run along the player-to-beacon
+-- line from behind, cluster bomb perpendicular from the left), so a call has to be
+-- identifiable from the log. Querying the munition identities as well as the
+-- aircraft is what makes that possible without relying on the player to remember
+-- which stratagem each call was.
+--
+-- The hex values are the entity ids the kill-feed/damage tables name
+-- (eagle_bomb, eagle_base, ...). The beacon is queried separately because it drives
+-- call detection. Any hex that does not resolve on this build simply yields no
+-- units; it never errors.
+local QUERY_KEYS = {
+    { src = 'eagle_airstrike', hex = '2ea01cb1676aca29' },
+    { src = 'eagle_cluster',   hex = '9d4f7cb4eb34515d' },
+    { src = 'eagle_napalm',    hex = '27bb558c893383cc' },
+    { src = 'eagle_smoke',     hex = '1b3bcadabc7ef8d6' },
+    { src = 'eagle_gas',       hex = 'dbb286ad7ed9df96' },
+    { src = 'eagle_500kg',     hex = 'e44b691dc039a505' },
+    { src = 'eagle_rocket',    hex = '397792815583da29' },
+    { src = 'eagle_gunpods',   hex = '0bd0f9d59048e9d1' },
+    { src = 'eagle_base',      hex = '23a60681dd4383ec' },
+    { src = 'eagle_missile',   hex = 'dfbb9a0d8fa27d85' },
 }
+
+-- Which stratagem a munition identity implies. Two identities map to the strafing
+-- run (the aircraft body carries the gunpods), which is expected and harmless: the
+-- analyzer only needs the set.
+local STRATAGEM_OF = {
+    eagle_airstrike = 'airstrike',
+    eagle_cluster   = 'cluster',
+    eagle_napalm    = 'napalm',
+    eagle_smoke     = 'smoke',
+    eagle_gas       = 'gas',
+    ['eagle_500kg'] = '500kg',
+    eagle_rocket    = '110mm_rocket_pods',
+    eagle_gunpods   = 'strafing_run',
+    eagle_base      = 'strafing_run',
+    eagle_missile   = 'air_to_air',
+}
+
+-- Identity hexes the optional fallback scan treats as Eagle-family. Derived from
+-- QUERY_KEYS so the two lists cannot drift apart.
+local EAGLE_GUIDS = {}
+for _, row in ipairs(QUERY_KEYS) do EAGLE_GUIDS[row.hex] = row.src end
+EAGLE_GUIDS[BEACON_HEX] = 'beacon'
 
 local SAMPLE_HZ = 10            -- engine accessor calls per second
 local MAX_SAMPLES = 20000       -- hard stop; keeps the log bounded
@@ -202,12 +247,27 @@ local function main_world()
     return nil
 end
 
-local function beacon_key()
+local function key_from_hex(hex)
     if type(sr.IdString64) == 'table' and sr.IdString64.from_hex then
-        local ok, key = pcall(sr.IdString64.from_hex, BEACON_HEX)
+        local ok, key = pcall(sr.IdString64.from_hex, hex)
         if ok and key ~= nil then return key end
     end
-    return BEACON_HEX      -- some builds accept the plain path/hex string
+    return hex      -- some builds accept the plain hex string
+end
+
+local function beacon_key() return key_from_hex(BEACON_HEX) end
+
+-- The aircraft query plus every munition query, resolved once at load. A hex that
+-- fails to resolve is kept as the plain string and simply returns no units, so a
+-- build that does not accept one of these costs nothing but a wasted hash lookup.
+local RESOLVED = {}
+local function resolve_query_keys()
+    RESOLVED = {}
+    RESOLVED[#RESOLVED + 1] = { src = 'aircraft', key = EAGLE_RESOURCE }
+    for _, row in ipairs(QUERY_KEYS) do
+        RESOLVED[#RESOLVED + 1] = { src = row.src, key = key_from_hex(row.hex) }
+    end
+    return RESOLVED
 end
 
 -- ------------------------------------------------------------------ call state --
@@ -216,13 +276,16 @@ local active_call = nil
 local seen_beacon_ids = {}
 local call_serial = 0
 
-local function json_points(units, want_pose)
+-- Each entry carries the query it came from, so the log says which stratagem a call
+-- was, not merely where the aircraft went.
+local function json_points(entries, want_pose)
     local out = {}
-    for _, unit in ipairs(units) do
+    for _, entry in ipairs(entries) do
+        local unit = entry.unit
         local p = world_position(unit)
         if p then
-            local row = string.format('{"id":%q,"p":[%.4f,%.4f,%.4f]',
-                unit_identity(unit) or '?', p[1], p[2], p[3])
+            local row = string.format('{"src":%q,"id":%q,"p":[%.4f,%.4f,%.4f]',
+                entry.src or '?', unit_identity(unit) or '?', p[1], p[2], p[3])
             if want_pose and type(sr.Unit.world_pose) == 'function'
                 and type(sr.Matrix4x4) == 'table' and sr.Matrix4x4.forward then
                 local okt, pose = pcall(sr.Unit.world_pose, unit, 1)
@@ -241,24 +304,25 @@ local function json_points(units, want_pose)
     return '[' .. table.concat(out, ',') .. ']'
 end
 
-local function begin_call(now, beacons)
+local function begin_call(now, beacon_entries)
     call_serial = call_serial + 1
     active_call = {
         id = call_serial,
         started = now,
         last_seen = now,
         beacon_ids = {},
+        srcs = {},          -- which munition identities this call turned out to use
         samples = 0,
     }
-    for _, unit in ipairs(beacons) do
-        local id = unit_identity(unit)
+    for _, entry in ipairs(beacon_entries) do
+        local id = unit_identity(entry.unit)
         if id then
             active_call.beacon_ids[id] = true
             seen_beacon_ids[id] = now
         end
     end
     M.calls = M.calls + 1
-    log(string.format('call %d began (beacon units=%d)', call_serial, #beacons))
+    log(string.format('call %d began (beacon units=%d)', call_serial, #beacon_entries))
     emit({ kind = 'call_begin', t = now, call = call_serial })
 end
 
@@ -280,8 +344,8 @@ local function fallback_eagles(world, now)
     for i = scan_cursor + 1, last do
         local unit = scan_units.list[i]
         local id = unit_identity(unit)
-        if id and (EAGLE_GUIDS[id] or id == BEACON_HEX) then
-            found[#found + 1] = unit
+        if id and EAGLE_GUIDS[id] then
+            found[#found + 1] = { src = EAGLE_GUIDS[id], unit = unit }
         end
     end
     scan_cursor = last >= #scan_units.list and 0 or last
@@ -306,44 +370,67 @@ local function tick()
     if world == nil then return end
 
     local beacons = units_by_resource(world, beacon_key())
-    local eagles = units_by_resource(world, EAGLE_RESOURCE)
+    local beacon_entries, eagle_entries = {}, {}
+    for _, unit in ipairs(beacons) do
+        beacon_entries[#beacon_entries + 1] = { src = 'beacon', unit = unit }
+    end
+    for _, row in ipairs(RESOLVED) do
+        for _, unit in ipairs(units_by_resource(world, row.key)) do
+            eagle_entries[#eagle_entries + 1] = { src = row.src, unit = unit }
+        end
+    end
     if FALLBACK_WORLD_SCAN then
-        for _, unit in ipairs(fallback_eagles(world, now)) do
-            local duplicate = false
-            for _, existing in ipairs(eagles) do
-                if existing == unit then duplicate = true break end
+        local seen = {}
+        for _, entry in ipairs(eagle_entries) do seen[entry.unit] = true end
+        for _, entry in ipairs(fallback_eagles(world, now)) do
+            if not seen[entry.unit] then
+                seen[entry.unit] = true
+                eagle_entries[#eagle_entries + 1] = entry
             end
-            if not duplicate then eagles[#eagles + 1] = unit end
         end
     end
 
     -- A call starts the first time we see a beacon we have not seen before.
     local fresh = false
-    for _, unit in ipairs(beacons) do
-        local id = unit_identity(unit)
+    for _, entry in ipairs(beacon_entries) do
+        local id = unit_identity(entry.unit)
         if id and seen_beacon_ids[id] == nil then fresh = true end
     end
-    if fresh or (active_call == nil and #beacons > 0) then
-        if active_call == nil then begin_call(now, beacons) end
+    if fresh or (active_call == nil and #beacon_entries > 0) then
+        if active_call == nil then begin_call(now, beacon_entries) end
     end
 
     if active_call == nil then
         -- Idle: still record eagle sightings, because the Eagle orbits between calls
         -- and its pre-call heading is exactly what a prediction mod would need.
-        if #eagles > 0 then
-            emit({ kind = 'idle_eagle', t = now, eagles = json_points(eagles, true) })
+        if #eagle_entries > 0 then
+            emit({ kind = 'idle_eagle', t = now, eagles = json_points(eagle_entries, true) })
         end
         return
     end
 
+    -- Name the stratagem as soon as its munition shows up, so the log is
+    -- self-identifying and the player does not have to remember the call order.
+    for _, entry in ipairs(eagle_entries) do
+        local src = entry.src
+        if src and not active_call.srcs[src] then
+            active_call.srcs[src] = true
+            local family = STRATAGEM_OF[src]
+            log(string.format('call %d: %s seen%s', active_call.id, src,
+                family and (' -> stratagem ' .. family) or ''))
+            emit({ kind = 'call_stratagem', t = now, call = active_call.id,
+                   note = family and (src .. '=' .. family) or src })
+        end
+    end
+
     active_call.samples = active_call.samples + 1
-    active_call.last_seen = (#beacons > 0) and now or active_call.last_seen
+    active_call.last_seen = (#beacon_entries > 0) and now or active_call.last_seen
 
     local ok, line = pcall(function()
         return string.format(
             '{"kind":"sample","t":%.3f,"call":%d,"n":%d,"beacons":%s,"eagles":%s}',
             now, active_call.id, active_call.samples,
-            json_points(beacons, true), json_points(eagles, true))
+            json_points(beacon_entries, true), json_points(eagle_entries, true))
     end)
     if ok and jsonl then
         pcall(jsonl.write, jsonl, line .. '\n')
@@ -352,12 +439,18 @@ local function tick()
     end
     M.samples = M.samples + 1
 
-    local gone = (#beacons == 0) and (now - active_call.last_seen) > CALL_GONE_S
+    local gone = (#beacon_entries == 0) and (now - active_call.last_seen) > CALL_GONE_S
     local timed_out = (now - active_call.started) > CALL_TIMEOUT_S
     if gone or timed_out then
-        log(string.format('call %d ended after %.1fs, %d sample(s), reason=%s',
+        local names = {}
+        for src in pairs(active_call.srcs) do
+            names[#names + 1] = STRATAGEM_OF[src] or src
+        end
+        table.sort(names)
+        log(string.format('call %d ended after %.1fs, %d sample(s), reason=%s, saw=%s',
             active_call.id, now - active_call.started, active_call.samples,
-            timed_out and 'timeout' or 'beacon gone'))
+            timed_out and 'timeout' or 'beacon gone',
+            #names > 0 and table.concat(names, '+') or 'nothing'))
         emit({ kind = 'call_end', t = now, call = active_call.id,
                note = timed_out and 'timeout' or 'beacon_gone' })
         active_call = nil
@@ -386,6 +479,10 @@ local function install()
         M.status = 'no_engine_api'
         return M
     end
+
+    resolve_query_keys()
+    log(string.format('querying %d identity key(s) per sample: aircraft plus the '
+        .. 'munitions that name each Eagle stratagem', #RESOLVED))
 
     local previous = rawget(_G, 'update')
     if type(previous) == 'function' then
