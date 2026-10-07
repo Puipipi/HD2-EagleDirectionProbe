@@ -64,7 +64,7 @@ python -m unittest discover -s tests -v                    # 离线检查
 
 然后：
 
-1. 在模组管理器里导入 `dist/HD2-EagleDirectionProbe-0.1.0.zip`，确认 **Bingus Shared Loader** 也启用，部署；
+1. 在模组管理器里导入 `dist/HD2-EagleDirectionProbe-0.2.0.zip`，确认 **Bingus Shared Loader** 也启用，部署；
 2. 进一局，从不同角度呼叫飞鹰战备 3–4 次（空袭 / 集束 / 凝固汽油 / 机枪扫射 都行；500kg 是单发、没有轴线，别只用它）。**基准数据尽量在开阔地形取**，理由见下节；
 3. 退出任务，探针在 shutdown 时刷盘。
 
@@ -155,7 +155,7 @@ python -B work/standalone/build_probe.py
 python -m unittest discover -s tests -v
 ```
 
-Import `dist/HD2-EagleDirectionProbe-0.1.0.zip` alongside Bingus Shared Loader v15+,
+Import `dist/HD2-EagleDirectionProbe-0.2.0.zip` alongside Bingus Shared Loader v15+,
 deploy, call a few Eagle stratagems from different angles, then leave the mission.
 Results land in `EagleDirectionProbe.jsonl` and `EagleDirectionProbe.log` under
 `%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\`, and
