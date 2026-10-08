@@ -606,6 +606,54 @@ class CorridorFeedbackTest(unittest.TestCase):
         self.assertIn('TRAIL_HOLD_S', body,
                       'the hold must be applied where tracks are retired')
 
+    def test_terrain_helpers_are_defined_before_sample_body_uses_them(self):
+        """The forward-declaration trap this repository already has a skill about.
+
+        add_ground_sample and terrain_height were written in the drawing section, which is
+        AFTER sample_body. Lua resolved them as globals there, so the first settled beacon
+        called a nil and aborted the whole tick - no impact point was ever recorded, and the
+        only symptom was `impacts=0` in the harness. The call site is in sample_body, so the
+        definitions must come first.
+        """
+        lines = self.source.splitlines()
+        def line_of(needle):
+            for i, text in enumerate(lines, 1):
+                if needle in text:
+                    return i
+            self.fail('%r not found' % needle)
+        body = line_of('local function sample_body()')
+        self.assertLess(line_of('local function add_ground_sample('), body,
+                        'add_ground_sample must be defined before sample_body')
+        self.assertLess(line_of('local function terrain_height('), body,
+                        'terrain_height must be defined before sample_body')
+
+    def test_terrain_is_sampled_from_settled_beacons(self):
+        """A settled beacon is lying on the ground, so its height is a terrain sample.
+
+        Collected for every thrown beacon, not just this call's: a squadmate's landed beacon is
+        an equally good sample of the ground over there.
+        """
+        self.assertIn('add_ground_sample(p, now)', self.source)
+        self.assertIn('GROUND_SAMPLE_CAP', self.source)
+        self.assertIn('GROUND_SAMPLE_R', self.source)
+
+    def test_the_strip_follows_terrain(self):
+        """Complaint 7, the half I said I could do without an in-game session.
+
+        True terrain following needs a ray query, and there is no non-FFI one on this build, so
+        the ground is SAMPLED and interpolated. Verified numerically in
+        tests/offline/verify_terrain.py: flat samples give a 0.00 m spread, a 40 m hillside
+        gives 28.36 m, and removing the samples returns it to flat.
+        """
+        strip = self.source.split('local function build_geometry()', 1)[1].split(
+            '\nlocal function', 1)[0]
+        self.assertIn('terrain_height(x, y, imp[3])', strip,
+                      'every strip vertex must take its height from the terrain samples')
+        self.assertIn('GROUND_SEG_M', self.source,
+                      'the lanes must be subdivided or they can only ever be flat')
+        self.assertIn('if den == 0 then return fallback end', self.source,
+                      'with no samples it must fall back to the impact height, not to nothing')
+
     def test_the_lines_are_ribbons_not_single_lines(self):
         """Complaint 3a: one thin line is invisible, and worse so at range.
 

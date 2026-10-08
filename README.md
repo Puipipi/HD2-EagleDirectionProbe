@@ -239,6 +239,33 @@ twoair   tracks=2 points=48 headings=2 seg=175   submits=264
 1. `guarded()` 里 `now_ms` 在定义前被使用 → 真机上会**每帧**在引擎 update 调用中抛错。
 2. 重写 `ensure_line` 时漏掉 `M.line = line` 赋值 → 几何每帧构建却从不提交（稳定 world 下第 2 帧被复用路径掩盖，只在 `worldchurn` 下暴露）。
 
+## `1.1.0`：地形跟随（第 7 条前半）——用「采样 + 插值」实现，并量化验证
+
+上一版我说地形跟随在契约内做不到，并给了 A/B/C 三条路。**我没等你回答就先把 B 做了**，因为它不需要你进游戏：每颗**落地的战备球都躺在地上，它的高度就是该点的地形高度**。队伍里每颗落地的信标都是一次采样，条带顶点用反距离加权（1/d²）在这些采样间插值，于是走廊会跟着地面起伏。没有附近采样时回退到落点自身高度——**退化成 A，而不是退化成什么都不画**。
+
+`tests/offline/verify_terrain.py` 做的是**量化验证**，不是「我写了插值」：
+
+```
+no samples       strip_segments=41  ground_at_build=1   spread=  0.00 m
+flat samples     strip_segments=41  ground_at_build=3   spread=  0.00 m
+sloped samples   strip_segments=41  ground_at_build=3   spread= 28.36 m   ← 40 m 落差的山坡
+flat again       strip_segments=41  ground_at_build=1   spread=  0.00 m
+```
+
+斜坡那一行 `z_min=20.75 z_max=49.11`——条带确实沿坡弯曲。**注意 28.36 而不是 40**：反距离加权会平滑，这是插值的性质，不是错误。
+
+### 这一轮我又踩了两个坑，都被工具抓到了
+
+1. **前向声明**——正是你仓库里 `hd2-lua-forward-declarations` 那个技能描述的陷阱。我把 `add_ground_sample`/`terrain_height` 写在了**绘制区**（`sample_body` 之后），于是 `sample_body` 调用它们时拿到的是 **nil 全局**：每次信标落地的第一个采样就抛错、整帧中止，**落点永远记录不到**。症状只有测试台里一个 `impacts=0`。现在有测试断言这两个函数必须定义在 `sample_body` 之前。
+2. **我的验证脚本自己是错的**——第一版用 `+0.01` 扰动落点来触发几何重建，但几何键用 `%.1f` 格式化，**这个改动舍入后不变**，于是条带从不重建、三种情况全报 `spread=0.00`，看起来像「插值没生效」。改成 `+0.5` 才看到真实结果。**一个看起来失败得很一致的验证，可能只是验证没跑。**
+
+### 仍然需要你的两条
+
+| 事项 | 为什么必须你来 |
+| --- | --- |
+| 进一局看观感 | 白色是否清楚、条带是否读得出是「带」、快速来袭时会不会看漏、**同时两架飞鹰是否真的两条**（`twoair` 是假引擎，真实多机时序我造不出来） |
+| 是否需要真地形（方案 C） | 它要 FFI + 每个游戏版本硬编码地址 + HD2Runtime，是**契约级变更**。B 已经能跟随起伏；C 的额外价值是精确到每个点的真实碰撞面 |
+
 ### 为什么这些规则现在有测试兜着
 
 `tests/test_analyzer.py` 的 `CostContractTest` 把我犯过的每一条都变成断言：per-tick 路径不得出现

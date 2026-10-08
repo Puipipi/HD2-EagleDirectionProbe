@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.0.0',
+    version = '1.1.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -53,6 +53,7 @@ local M = {
     -- points, and keeping only the newest threw the other one away.
     impacts = {},           -- [call] = { p = {...}, heading = {...}, t = t }
     impact_order = {},
+    ground = {},            -- terrain samples {x, y, z, t}: one per settled beacon
     line = nil,
     line_world = nil,
     lines = {},             -- [world] = line object; never destroyed inside the draw path
@@ -226,9 +227,22 @@ local IMPACT_TTL_S = 45        -- an impact point is worth showing while the dus
 -- The strip's half-width is the honest ordnance footprint scaled up with distance so it stays
 -- visible, the same trick the air ribbon uses. Near the impact it is near true scale; far away
 -- it is deliberately too wide, because an under-wide warning is the dangerous error.
-local GROUND_LANES = 4
-local GROUND_TICK_M = 20       -- spacing of the cross-hatching
+local GROUND_LANES = 3
+local GROUND_TICK_M = 30       -- spacing of the cross-hatching
 local GROUND_TRUE_HALF_M = 6   -- honest half-width of an Eagle bomb line
+
+-- TERRAIN. There is no ray query available without FFI: no installed mod has one, and the only
+-- implementation reaches the physics world through HD2Runtime plus a per-build address table.
+-- So the ground is SAMPLED rather than queried.
+--
+-- Every beacon that has come to rest is lying ON the ground, so its height IS the terrain
+-- height at its x,y. A squad's beacons give several samples across the battlefield, and the
+-- strip's vertices interpolate them, so the corridor bends with the ground instead of being one
+-- flat line at the impact point's height. With no nearby sample it falls back to the impact
+-- height - option A's behaviour - so this degrades to the old flat strip, not to nothing.
+local GROUND_SAMPLE_R = 400    -- samples within this radius contribute
+local GROUND_SAMPLE_CAP = 48
+local GROUND_SEG_M = 40        -- subdivision length used to follow the ground
 local FORWARD_M = 900           -- how far ahead to extend along the current heading
 local ARROW_M = 90              -- arrowhead arm length
 local GROUND_HALF_M = 140       -- ground strip: half its length along the axis
@@ -800,6 +814,41 @@ local function nearest_heading(point)
     return best
 end
 
+-- Terrain sampling and interpolation. See the constants for why there is no ray query here.
+local function add_ground_sample(p, now)
+    local g = M.ground
+    for i = 1, #g do
+        local s = g[i]
+        -- A new sample within 5 m of an old one replaces it instead of piling up duplicates.
+        if (s[1] - p[1]) * (s[1] - p[1]) + (s[2] - p[2]) * (s[2] - p[2]) < 25 then
+            s[3], s[4] = p[3], now
+            return
+        end
+    end
+    g[#g + 1] = { p[1], p[2], p[3], now }
+    if #g > GROUND_SAMPLE_CAP then table.remove(g, 1) end
+end
+
+-- Inverse-distance weighted height from the samples within range, or the fallback when there
+-- are none. Weighting by 1/d^2 lets the nearest sample dominate, which is what makes a slope
+-- read as a slope rather than as a plateau.
+local function terrain_height(x, y, fallback)
+    local g = M.ground
+    local num, den = 0, 0
+    for i = 1, #g do
+        local s = g[i]
+        local d2 = (s[1] - x) * (s[1] - x) + (s[2] - y) * (s[2] - y)
+        if d2 <= GROUND_SAMPLE_R * GROUND_SAMPLE_R then
+            local w = 1 / (d2 + 1)
+            num = num + w * s[3]
+            den = den + w
+        end
+    end
+    if den == 0 then return fallback end
+    return num / den
+end
+
+
 local function sample_body()
     if M.stopped then return end
     local now = os.clock()
@@ -855,13 +904,13 @@ local function sample_body()
         log(string.format('status: worlds=%s session=%s (%s) beacon_units=%d '
             .. 'aircraft_units=%d temp_bytes=%s last_tick=%.1fms samples=%d calls=%d '
             .. 'backoff=x%d draw=%.2fms peak_draw=%.2fms frame_peak=%.1fms slow_frames=%d '
-            .. 'segments=%d submits=%d tracks=%d impacts=%d',
+            .. 'segments=%d submits=%d tracks=%d impacts=%d ground=%d',
             tostring(count_worlds()), tostring(live),
             tostring(why), #beacon_entries, #eagle_entries, tostring(M.last_temp_bytes),
             M.last_tick_ms or 0, M.samples, M.calls, M.backoff or 1,
             M.draw_last_ms or 0, M.draw_peak_ms or 0, M.frame_peak_ms or 0,
             M.frame_slow or 0, M.seg_count or 0, M.submits or 0, #M.track_order,
-            #M.impact_order))
+            #M.impact_order, #M.ground))
         emit({ kind = 'status', t = now,
                note = string.format('worlds=%s session=%s beacon=%d aircraft=%d',
                    tostring(count_worlds()), tostring(live), #beacon_entries,
@@ -914,6 +963,13 @@ local function sample_body()
         end
         if rec and rec.thrown and thrown == nil then thrown = entry.unit end
         entry.primary = (rec ~= nil and rec.thrown == true) or false
+        -- A settled beacon is a terrain sample: whatever it is resting on IS the ground.
+        -- Collected for EVERY beacon that was thrown, not just this call's, because a
+        -- squadmate's landed beacon is an equally good sample of the ground over there.
+        if rec and rec.settled and p then
+            add_ground_sample(p, now)
+        end
+
         -- The thrown beacon's latest position is the impact point once it has settled: it is
         -- lying on the ground, so its height IS ground level. Keyed by CALL, because two
         -- calls can be down at once and keeping only the newest threw the other one away.
@@ -1174,23 +1230,42 @@ local function build_geometry()
         local half = math.max(GROUND_TRUE_HALF_M,
             STRAND_STEP_PER_M * math.max(dist, 25) * GROUND_LANES)
         local c = colour('ground')
-        -- Longitudinal lanes.
+
+        -- A point on the strip, with its height taken from the terrain samples rather than
+        -- from the impact's own height. Subdividing is what lets the strip bend with the
+        -- ground; a single straight segment per lane can only ever be flat.
+        local function at(t, o)
+            local x = imp[1] + hx * t + px * o
+            local y = imp[2] + hy * t + py * o
+            return sr.Vector3(x, y, terrain_height(x, y, imp[3]))
+        end
+
+        local steps = math.max(1, math.ceil((2 * GROUND_HALF_M) / GROUND_SEG_M))
+
+        -- Longitudinal lanes, subdivided.
         for i = 0, GROUND_LANES - 1 do
             local o = -half + (2 * half) * (i / (GROUND_LANES - 1))
-            seg[#seg + 1] = { c,
-                sr.Vector3(imp[1] - hx * GROUND_HALF_M + px * o,
-                           imp[2] - hy * GROUND_HALF_M + py * o, imp[3]),
-                sr.Vector3(imp[1] + hx * GROUND_HALF_M + px * o,
-                           imp[2] + hy * GROUND_HALF_M + py * o, imp[3]) }
+            local prev = nil
+            for k = 0, steps do
+                local t = -GROUND_HALF_M + (2 * GROUND_HALF_M) * (k / steps)
+                local v = at(t, o)
+                if prev ~= nil then seg[#seg + 1] = { c, prev, v } end
+                prev = v
+            end
         end
-        -- Cross-hatching, which is what makes it read as an area.
+
+        -- Cross-hatching, also subdivided across the width, so it follows the ground too and
+        -- is what makes the thing read as an area rather than as a direction.
         local ticks = math.floor((2 * GROUND_HALF_M) / GROUND_TICK_M)
         for i = 0, ticks do
             local t = -GROUND_HALF_M + i * GROUND_TICK_M
-            local cx, cy = imp[1] + hx * t, imp[2] + hy * t
-            seg[#seg + 1] = { c,
-                sr.Vector3(cx + px * half, cy + py * half, imp[3]),
-                sr.Vector3(cx - px * half, cy - py * half, imp[3]) }
+            local prev = nil
+            for k = 0, 2 do
+                local o = -half + (2 * half) * (k / 2)
+                local v = at(t, o)
+                if prev ~= nil then seg[#seg + 1] = { c, prev, v } end
+                prev = v
+            end
         end
     end
 
