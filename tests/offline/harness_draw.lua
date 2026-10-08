@@ -13,6 +13,9 @@ os.clock = function() return FAKE_TIME end
 local tmp = os.getenv('DSH_HARNESS_TMP') or '.'
 local probe_path = os.getenv('DSH_PROBE_PATH')
 local MODE = os.getenv('DSH_HARNESS_MODE') or 'normal'
+-- Simulated frame interval. The real game measured 133-156 fps; the default here
+-- stays at 20 fps for the older scenarios, and the counterfactuals set it.
+local FRAME_DT = tonumber(os.getenv('DSH_FRAME_DT')) or 0.05
 local REAL_GETENV = os.getenv
 os.getenv = function(name)
     if name == 'LOCALAPPDATA' then return tmp end
@@ -115,10 +118,28 @@ sr.Unit = {
 sr.Matrix4x4 = {
     forward = function() return { -0.5, 0.26, -0.82 } end,
 }
+-- Rendering semantics, modelled deliberately.
+--
+-- FRAME_DISPATCHED: dispatch is a PER-FRAME submission. A line object that is not dispatched in
+-- this frame draws nothing in this frame - which is what the player described as "a pair of white
+-- lines for an instant and then nothing", and what no previous harness run could see because the
+-- fake object simply accumulated calls and forgot.
+FRAME_DISPATCHED = false
+FRAME_HAS_LINES = false
 sr.LineObject = {
-    reset = function() ADDED[#ADDED + 1] = 'reset' end,
-    add_line = function(_, color, a, b) ADDED[#ADDED + 1] = { color, a, b } end,
-    dispatch = function() ADDED[#ADDED + 1] = 'dispatch' end,
+    reset = function()
+        ADDED[#ADDED + 1] = 'reset'
+        FRAME_HAS_LINES = false          -- reset clears what the object would draw
+    end,
+    add_line = function(_, color, a, b)
+        ADDED[#ADDED + 1] = { color, a, b }
+        -- Alpha 0 is the probe's way of hiding a line, so it does not count as visible.
+        if color ~= nil and color.a ~= nil and color.a > 0 then FRAME_HAS_LINES = true end
+    end,
+    dispatch = function()
+        ADDED[#ADDED + 1] = 'dispatch'
+        FRAME_DISPATCHED = true
+    end,
 }
 sr.Color = function(a, r, g, b)
     local c = { a = a, r = r, g = g, b = b }
@@ -163,10 +184,19 @@ FAKE_TIME = FAKE_TIME + 30
 -- 20 fps, so a corridor refresh fires every frame and a 5 Hz log sample every fourth.
 local OBS = { frames = 0, visible = 0, blinks = 0, was = 0, seg_sum = 0, stubs = 0 }
 local function tick(n)
-    for _ = 1, n do
-        FAKE_TIME = FAKE_TIME + 0.05
+    -- n is in units of the old 20 fps frame, so scaling it keeps each phase's DURATION the same
+    -- while the number of frames changes.
+    local frames = math.max(1, math.floor(n * (0.05 / FRAME_DT)))
+    for _ = 1, frames do
+        -- Cleared at the START of the frame: whatever the probe does during it decides whether
+        -- anything is on screen for it.
+        FRAME_DISPATCHED, FRAME_HAS_LINES = false, false
+        FAKE_TIME = FAKE_TIME + FRAME_DT
         _G.update()
         OBS.frames = OBS.frames + 1
+        if FRAME_DISPATCHED and FRAME_HAS_LINES then
+            OBS.render_visible = (OBS.render_visible or 0) + 1
+        end
         local now_seg = M.seg_count or 0
         if now_seg > 0 then OBS.visible = OBS.visible + 1 end
         -- A blink is the corridor being on screen and then not: the thing the player reported
@@ -221,6 +251,9 @@ tick(40)
 report('aircraft gone')
 
 print(string.format('  peak_draw=%.3f ms  draw_off=%s', M.draw_peak_ms or 0, tostring(M.draw_off)))
+print(string.format('  RENDERED frames: %d of %d (%.0f%%) - dispatch in the same frame it had lines',
+    OBS.render_visible or 0, OBS.frames,
+    100.0 * (OBS.render_visible or 0) / math.max(OBS.frames, 1)))
 print(string.format('SUMMARY mode=%s frames=%d visible=%d blinks=%d stubs=%d mean_seg=%.1f '
     .. 'line_created=%d line_destroyed=%d',
     MODE, OBS.frames, OBS.visible, OBS.blinks, OBS.stubs,
