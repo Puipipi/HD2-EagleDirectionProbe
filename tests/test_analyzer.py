@@ -637,6 +637,33 @@ class CorridorFeedbackTest(unittest.TestCase):
                          'the flag that rendered in 0.7.0 must be the default')
         self.assertIn('EagleCorridor.occluded', self.source)
 
+    def test_the_ribbon_is_wide_enough_to_read(self):
+        """The arithmetic I should have done before shipping "a ribbon of strands".
+
+        On-screen width is constant with distance, but at what value? At 1920 px and a 90 degree
+        horizontal FOV, 1 m at distance D spans 960/D px. The old 0.0012 x 3 strands is 0.48 m at
+        200 m - about 2.3 px at every distance, which is a line, not a band. 0.0022 x 5 is 8.4 px.
+        See work/eagle-direction-spike/ribbon_width.py.
+        """
+        step = float(re.search(r'local STRAND_STEP_PER_M = ([\d.]+)', self.source).group(1))
+        strands = int(re.search(r'local AIR_STRANDS = (\d+)', self.source).group(1))
+        self.assertGreaterEqual(strands, 5, 'three strands is 2.3 px, which reads as a line')
+        width_at_200 = step * 200 * (strands - 1)
+        px = width_at_200 * 960.0 / 200
+        self.assertGreaterEqual(px, 6.0,
+                                'the ribbon must be several pixels wide, not 2.3')
+
+    def test_the_arrowhead_is_closed(self):
+        """Three lines meeting at a point is a star, not an arrow.
+
+        That is what the player reported seeing: "at least three straight lines intersecting at
+        one point". The base between the two arm tips closes the triangle.
+        """
+        arrow = self.source.split('local tip_a =', 1)[1].split('-- The ground strips', 1)[0]
+        self.assertIn('tip_b', arrow)
+        self.assertIn('The base closes the triangle', arrow)
+        self.assertIn('add_ribbon(seg, tip_a[1]', arrow)
+
     def test_terrain_helpers_are_defined_before_sample_body_uses_them(self):
         """The forward-declaration trap this repository already has a skill about.
 

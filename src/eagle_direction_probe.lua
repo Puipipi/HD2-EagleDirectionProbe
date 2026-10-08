@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.2.0',
+    version = '1.3.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -204,7 +204,7 @@ local THROW_SPEED_MPS = 8
 -- created with the flag a proven mod uses for geometry it wants seen through the world.
 -- Colour is white now: the player asked for it, and white is also the one colour that
 -- survives a channel-order mistake, since a permutation of 255,255,255 is still white.
-local TRAIL_MAX = 16            -- ground track points kept (about 3 s at 5 Hz)
+local TRAIL_MAX = 10            -- ground track points kept (about 2 s at 5 Hz)
 
 -- How long the track survives with no aircraft sighting. The measured rate of empty samples
 -- is around a quarter, at 5 Hz, so a fraction of a second is not enough and several seconds
@@ -228,7 +228,7 @@ local IMPACT_TTL_S = 45        -- an impact point is worth showing while the dus
 -- visible, the same trick the air ribbon uses. Near the impact it is near true scale; far away
 -- it is deliberately too wide, because an under-wide warning is the dangerous error.
 local GROUND_LANES = 3
-local GROUND_TICK_M = 30       -- spacing of the cross-hatching
+local GROUND_TICK_M = 6        -- spacing of the cross-hatching: dense enough to read as a band
 local GROUND_TRUE_HALF_M = 6   -- honest half-width of an Eagle bomb line
 
 -- TERRAIN. There is no ray query available without FFI: no installed mod has one, and the only
@@ -244,15 +244,18 @@ local GROUND_SAMPLE_R = 400    -- samples within this radius contribute
 local GROUND_SAMPLE_CAP = 48
 local GROUND_SEG_M = 70        -- subdivision length used to follow the ground
 local FORWARD_M = 900           -- how far ahead to extend along the current heading
-local ARROW_M = 90              -- arrowhead arm length
+local ARROW_M = 140             -- arrowhead arm length
 local GROUND_HALF_M = 140       -- ground strip: half its length along the axis
 
 -- Lateral offset between strands is this fraction of the distance to the anchor, so the
 -- ribbon subtends a constant angle. Calibrated for roughly one pixel per step at 1080p with
 -- a ~50 degree vertical field of view; it cannot be exact, because the camera position is
 -- not readable without FFI and this probe has none.
-local STRAND_STEP_PER_M = 0.0012
-local AIR_STRANDS = 3
+local STRAND_STEP_PER_M = 0.0022
+local AIR_STRANDS = 5
+-- The trail is a path the aircraft has already flown, so it can be thin. The forward line
+-- and the arrowhead are the part that has to be unmissable, so they get the full ribbon.
+local TRAIL_STRANDS = 3
 
 local DRAW_BUDGET_MS = 8        -- one frame's drawing should fit in this
 local DRAW_SLOW_BEFORE_OFF = 8  -- consecutive breaches before drawing switches itself off
@@ -1266,18 +1269,14 @@ local function build_geometry()
             end
         end
 
-        -- Cross-hatching, also subdivided across the width, so it follows the ground too and
-        -- is what makes the thing read as an area rather than as a direction.
+        -- A dense ladder of SINGLE segments. One pixel per line, but 47 lines across 280 m read
+        -- as a filled band - which is the cheap way to make an area out of a line-drawing API,
+        -- and the reason these are dense while the longitudinal lanes are not. Each tick's two
+        -- endpoints still take their own terrain heights, so the ladder follows the ground.
         local ticks = math.floor((2 * GROUND_HALF_M) / GROUND_TICK_M)
         for i = 0, ticks do
             local t = -GROUND_HALF_M + i * GROUND_TICK_M
-            local prev = nil
-            for k = 0, 2 do
-                local o = -half + (2 * half) * (k / 2)
-                local v = at(t, o)
-                if prev ~= nil then seg[#seg + 1] = { c, prev, v } end
-                prev = v
-            end
+            seg[#seg + 1] = { c, at(t, -half), at(t, half) }
         end
     end
 
@@ -1289,7 +1288,7 @@ local function build_geometry()
         M.anchor = M.anchor or trail[n]
         for i = 1, n - 1 do
             local a, b = trail[i], trail[i + 1]
-            add_ribbon(seg, a[1], a[2], a[3], b[1], b[2], b[3], AIR_STRANDS, 'air')
+            add_ribbon(seg, a[1], a[2], a[3], b[1], b[2], b[3], TRAIL_STRANDS, 'air')
         end
         if head and n >= 1 then
             local p = trail[n]
@@ -1302,11 +1301,15 @@ local function build_geometry()
             if len > 0 then
                 bx, by = bx / len, by / len
                 local ax, ay = -by, bx
-                for _, s in ipairs({ 1, -1 }) do
-                    add_ribbon(seg, tx, ty, tz,
-                        tx + (bx + ax * s) * ARROW_M, ty + (by + ay * s) * ARROW_M, tz,
-                        AIR_STRANDS, 'air')
+                local tip_a = { tx + (bx + ax) * ARROW_M, ty + (by + ay) * ARROW_M, tz }
+                local tip_b = { tx + (bx - ax) * ARROW_M, ty + (by - ay) * ARROW_M, tz }
+                for _, tip in ipairs({ tip_a, tip_b }) do
+                    add_ribbon(seg, tx, ty, tz, tip[1], tip[2], tip[3], AIR_STRANDS, 'air')
                 end
+                -- The base closes the triangle. Without it the head is three lines through one
+                -- point, which is what the player reported seeing instead of an arrow.
+                add_ribbon(seg, tip_a[1], tip_a[2], tip_a[3], tip_b[1], tip_b[2], tip_b[3],
+                    AIR_STRANDS, 'air')
             end
         end
     end
