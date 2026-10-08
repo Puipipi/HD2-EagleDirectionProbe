@@ -136,7 +136,29 @@ def horizontal(point, up):
     return point[others[0]], point[others[1]]
 
 
+def newest_session_file(directory):
+    """The most recent per-session samples file in a directory.
+
+    The probe writes one file per session, so pointing the analyzer at the log directory
+    should mean "the last run" rather than "a name I have to look up in the log".
+    """
+    import glob
+    import os
+    candidates = glob.glob(os.path.join(directory, 'EagleDirectionProbe-*.jsonl'))
+    if not candidates:
+        return None
+    return max(candidates, key=os.path.getmtime)
+
+
 def load(path):
+    import os
+    if os.path.isdir(path):
+        picked = newest_session_file(path)
+        if picked is None:
+            print('no EagleDirectionProbe-*.jsonl in %s' % path)
+            return []
+        print('newest session file: %s' % os.path.basename(picked))
+        path = picked
     records = []
     with open(path, encoding='utf-8') as fh:
         for lineno, raw in enumerate(fh, 1):

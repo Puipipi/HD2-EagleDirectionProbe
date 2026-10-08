@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '0.6.0',
+    version = '0.6.1',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -107,7 +107,13 @@ EAGLE_GUIDS[BEACON_HEX] = 'beacon'
 -- Both of those are now bounded rather than trusted.
 local SAMPLE_HZ = 5             -- deliberately below what the probe would like
 local MAX_SAMPLES = 20000       -- hard stop; keeps the log bounded
-local CALL_TIMEOUT_S = 30       -- a call is abandoned after this long
+-- A call is abandoned after this long. It was 30 s, which is LONGER than the gap between
+-- a player's throws, so a second throw landed inside the first call and was swallowed:
+-- five throws produced three calls in the measured session. The aircraft's pass is over
+-- within a few seconds, so 10 s still captures it while letting each throw be its own call.
+-- Ending a call also clears the motion table, so the landed beacon re-registers as
+-- unmoved and cannot start another call until the player really throws again.
+local CALL_TIMEOUT_S = 10
 local CALL_GONE_S = 3           -- ...or this long after the beacon disappears
 
 local TICK_BUDGET_MS = 25       -- one tick's engine work should fit in this
@@ -145,7 +151,15 @@ local SCAN_CHUNK = 2000
 local HOME = (os.getenv('LOCALAPPDATA') or os.getenv('TEMP') or '.')
     .. '/CowboyBingus/Helldivers2'
 local LOG_PATH = HOME .. '/Logs/EagleDirectionProbe.log'
-local JSONL_PATH = HOME .. '/Logs/EagleDirectionProbe.jsonl'
+-- One samples file PER SESSION, named for when the session started.
+--
+-- 0.6.0 reused a single name and opened it with 'w', so merely launching the game again
+-- truncated the previous session's samples. That is not hypothetical - it destroyed a
+-- completed measurement. The log is append-only so it survived, but it holds counts and
+-- call boundaries rather than coordinates, so the geometry was unrecoverable. A fresh
+-- name per session also keeps call ids from colliding across sessions.
+local JSONL_PATH = HOME .. '/Logs/EagleDirectionProbe-'
+    .. tostring(os.time()) .. '.jsonl'
 
 local log_file
 local function log(line)
@@ -685,6 +699,10 @@ end
 local function install()
     if not open_jsonl() then
         log('WARNING: could not open ' .. JSONL_PATH .. '; log-only mode')
+    else
+        -- Naming the file in the log means the samples can always be found, even though
+        -- the name now changes every session.
+        log('samples file: ' .. JSONL_PATH)
     end
     log(string.format('v%s installed (read-only probe; no writes to game memory)',
         M.version))

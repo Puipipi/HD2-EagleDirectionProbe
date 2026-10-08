@@ -362,6 +362,34 @@ class CostContractTest(unittest.TestCase):
         body = self.sample_body()
         self.assertIn('status:', body)
 
+    def test_samples_are_written_to_a_per_session_file(self):
+        """A relaunch must not destroy the previous session's samples.
+
+        0.6.0 opened one fixed filename with 'w'. Merely starting the game again
+        truncated a completed measurement - the log survived but holds counts, not
+        coordinates, so the geometry was gone.
+        """
+        idx = self.source.find('local JSONL_PATH')
+        self.assertNotEqual(idx, -1, 'JSONL_PATH is gone')
+        window = self.source[idx:idx + 240]
+        self.assertIn('os.time()', window,
+                      'the samples filename must be unique per session')
+        self.assertNotIn("'EagleDirectionProbe.jsonl'", self.source,
+                         'the fixed filename is the truncation bug; do not bring it back')
+        self.assertIn('samples file: ', self.source,
+                      'the log must name the file, since the name changes now')
+
+    def test_a_call_times_out_before_a_player_throws_again(self):
+        """Five throws produced three calls because the timeout outlasted the gap.
+
+        A call blocks new calls while it is active, so a timeout longer than the interval
+        between throws swallows the next throw.
+        """
+        match = re.search(r'local CALL_TIMEOUT_S\s*=\s*(\d+)', self.source)
+        self.assertIsNotNone(match, 'CALL_TIMEOUT_S is gone')
+        self.assertLessEqual(int(match.group(1)), 10,
+                             'a timeout this long will merge consecutive throws again')
+
 
 if __name__ == '__main__':
     unittest.main()
