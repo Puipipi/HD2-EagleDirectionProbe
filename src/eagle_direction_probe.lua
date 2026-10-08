@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '0.8.0',
+    version = '0.9.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -212,8 +212,27 @@ local DRAW_SLOW_BEFORE_OFF = 8  -- consecutive breaches before drawing switches 
 local KILL_SWITCH = nil         -- set in the paths section; a file that disables drawing
 local OCCLUDED_FILE = nil       -- ...a file that puts the lines back behind geometry
 local EVERYFRAME_FILE = nil     -- ...a file that forces one submission per frame
-local COLOR_AIR = { 255, 255, 255, 190 }
-local COLOR_GROUND = { 255, 255, 255, 235 }
+
+-- COLOURS ARE ARGB, NOT RGBA. This is now evidence, not a guess.
+--
+-- 0.7.0 shipped {255,190,40,110} and the player reported purple: read as (a,r,g,b) that is
+-- an opaque (190,40,110), which is purple. 0.8.0 shipped white {255,255,255,190} and the
+-- player reported YELLOW: as (a,r,g,b) that is an opaque (255,255,190), pale yellow - and
+-- the ground line's {255,255,255,235} read as near-white, which is what they called it. Three
+-- independent observations fit one order and nothing else does. A mod that draws in this game
+-- also calls its colour table `argb`, and the ballistic overlay's `sr.Color(255,255,0,0)` is
+-- an opaque red under this order rather than an invisible yellow under the other. White is
+-- still white either way, which is the one thing that survives being wrong.
+local COLOR_AIR = { 170, 255, 255, 255 }
+local COLOR_GROUND = { 235, 255, 255, 255 }
+
+-- How often the corridor itself is refreshed, in Hz.
+--
+-- The probe samples at SAMPLE_HZ for the LOG, and 5 Hz of logging was silently also the
+-- corridor's refresh rate - the player reported the line "being drawn only a few times". The
+-- two rates are separate now: the log stays small, the line moves smoothly. Measured engine
+-- query cost is 0.00 ms, so this is about legibility, not budget.
+local CORRIDOR_HZ = 20
 
 -- Only sample inside a mission. 0.2.0 sampled whenever a beacon-like object existed,
 -- and a stationary one exists on the ship: selecting a stratagem in the loadout
@@ -757,11 +776,13 @@ local function sample_body()
         log(string.format('status: worlds=%s session=%s (%s) beacon_units=%d '
             .. 'aircraft_units=%d temp_bytes=%s last_tick=%.1fms samples=%d calls=%d '
             .. 'backoff=x%d draw=%.2fms peak_draw=%.2fms frame_peak=%.1fms slow_frames=%d '
-            .. 'segments=%d submits=%d', tostring(count_worlds()), tostring(live),
+            .. 'segments=%d submits=%d trail=%d head=%s impact=%s',
+            tostring(count_worlds()), tostring(live),
             tostring(why), #beacon_entries, #eagle_entries, tostring(M.last_temp_bytes),
             M.last_tick_ms or 0, M.samples, M.calls, M.backoff or 1,
             M.draw_last_ms or 0, M.draw_peak_ms or 0, M.frame_peak_ms or 0,
-            M.frame_slow or 0, M.seg_count or 0, M.submits or 0))
+            M.frame_slow or 0, M.seg_count or 0, M.submits or 0, #M.trail,
+            tostring(M.trail_heading ~= nil), tostring(M.impact ~= nil)))
         emit({ kind = 'status', t = now,
                note = string.format('worlds=%s session=%s beacon=%d aircraft=%d',
                    tostring(count_worlds()), tostring(live), #beacon_entries,
@@ -845,7 +866,12 @@ local function sample_body()
 
     if thrown ~= nil and active_call == nil then
         begin_call(now, beacon_entries)
-        if active_call then active_call.primary_unit = thrown end
+        if active_call then
+            active_call.primary_unit = thrown
+            -- A new throw invalidates the previous impact point. Without this the ground
+            -- line from the last call would still be on the ground under the new one.
+            M.impact = nil
+        end
     end
 
 
@@ -860,7 +886,8 @@ local function sample_body()
         if o then M.selftest_origin = { o[1], o[2], o[3] } end
     end
 
-    update_trail(eagle_entries)
+    -- The corridor's track is fed by corridor_tick() at CORRIDOR_HZ, not from here: tying it
+    -- to this path is what made the line update at the log's 5 Hz.
 
     if active_call == nil then
         -- Idle: still record eagle sightings, because the Eagle orbits between calls
@@ -1023,13 +1050,40 @@ local function build_geometry()
         add_ribbon(seg, a[1], a[2], a[3], b[1], b[2], b[3], AIR_STRANDS, 'air')
     end
 
+    local imp = M.impact
+
+    -- 2. THE GROUND LINE, and it is deliberately NOT inside the aircraft-track branch.
+    --
+    -- It was, in 0.8.0, and that is why the player saw a white cross appear for an instant
+    -- and vanish: the moment the aircraft left, the track emptied and the ground line went
+    -- with it - the one thing that was supposed to answer "where does this land" was tied to
+    -- the thing that had already gone. The ground geometry depends on the impact point and
+    -- the heading, and on nothing else.
+    if imp and head then
+        local hx, hy = head[1], head[2]
+        local hlen = math.sqrt(hx * hx + hy * hy)
+        if hlen > 0 then
+            hx, hy = hx / hlen, hy / hlen
+            -- The impact axis, at the landed beacon's own height - which IS ground level,
+            -- because the beacon is lying on it.
+            add_ribbon(seg,
+                imp[1] - hx * GROUND_HALF_M, imp[2] - hy * GROUND_HALF_M, imp[3],
+                imp[1] + hx * GROUND_HALF_M, imp[2] + hy * GROUND_HALF_M, imp[3],
+                GROUND_STRANDS, 'ground')
+            -- The perpendicular tick that marks the impact point itself.
+            add_ribbon(seg,
+                imp[1] + hy * GROUND_CROSS_M, imp[2] - hx * GROUND_CROSS_M, imp[3],
+                imp[1] - hy * GROUND_CROSS_M, imp[2] + hx * GROUND_CROSS_M, imp[3],
+                GROUND_STRANDS, 'ground')
+        end
+    end
+
+    -- 3. The aircraft's own line: forward extension and arrowhead, when the track exists.
     if head and n >= 1 then
         local p = trail[n]
         local tx = p[1] + head[1] * FORWARD_M
         local ty = p[2] + head[2] * FORWARD_M
         local tz = p[3] + head[3] * FORWARD_M
-
-        -- 2. Forward extension and an arrowhead, in the horizontal plane.
         add_ribbon(seg, p[1], p[2], p[3], tx, ty, tz, AIR_STRANDS, 'air')
         local bx, by = -head[1], -head[2]
         local len = math.sqrt(bx * bx + by * by)
@@ -1042,28 +1096,8 @@ local function build_geometry()
                     AIR_STRANDS, 'air')
             end
         end
-
-        -- 3. The ground line: what the first in-mission report said was missing. The
-        -- aircraft's line alone does not tell you where the ordnance lands, so this is the
-        -- impact axis drawn at the landed beacon's own height - which IS ground level,
-        -- because the beacon is lying on it - plus a perpendicular tick on the impact point.
-        local imp = M.impact
-        if imp then
-            local hx, hy = head[1], head[2]
-            local hlen = math.sqrt(hx * hx + hy * hy)
-            if hlen > 0 then
-                hx, hy = hx / hlen, hy / hlen
-                add_ribbon(seg,
-                    imp[1] - hx * GROUND_HALF_M, imp[2] - hy * GROUND_HALF_M, imp[3],
-                    imp[1] + hx * GROUND_HALF_M, imp[2] + hy * GROUND_HALF_M, imp[3],
-                    GROUND_STRANDS, 'ground')
-                add_ribbon(seg,
-                    imp[1] + hy * GROUND_CROSS_M, imp[2] - hx * GROUND_CROSS_M, imp[3],
-                    imp[1] - hy * GROUND_CROSS_M, imp[2] + hx * GROUND_CROSS_M, imp[3],
-                    GROUND_STRANDS, 'ground')
-            end
-        end
     end
+
     M.seg = seg
     return #seg
 end
@@ -1181,9 +1215,15 @@ local function draw_corridor()
 
     local key = geometry_key()
     if key ~= M.geom_key then
-        M.geom_key = key
+        local count = build_geometry()
+        if count == 0 then
+            -- Nothing to show. Submitting an empty line object would be pointless work, and
+            -- the key must still be remembered or this would rebuild on every frame.
+            hide_line()
+            M.geom_key = key
+            return
+        end
         M.need_submit = true
-        build_geometry()
     end
 
     -- Submit when the geometry changed, and otherwise only if the player asked for the
@@ -1197,6 +1237,21 @@ local function draw_corridor()
 end
 
 
+-- The corridor's own tick, at CORRIDOR_HZ instead of the log's SAMPLE_HZ.
+--
+-- 0.8.0 refreshed the line from the sampling path, so a 5 Hz log rate was also a 5 Hz line -
+-- the player reported it as "drawn only a few times". Splitting the two rates is the whole
+-- fix; the engine queries it needs were measured at 0.00 ms.
+local function corridor_tick()
+    local world = main_world()
+    if world == nil then return end
+    local entries = {}
+    for _, unit in ipairs(units_by_resource(world, EAGLE_RESOURCE)) do
+        entries[#entries + 1] = { src = 'aircraft', unit = unit }
+    end
+    update_trail(entries)
+end
+
 -- Every tick runs inside the temp-byte-count guard and is timed. A tick that busts the
 -- budget slows the probe down; a run of them stops it. A probe that can degrade the
 -- game is not worth its data, and 0.2.0 had neither guard.
@@ -1205,11 +1260,25 @@ local function guarded()
     local saved = temp_guard_begin()
     local ok, reason = pcall(sample_body)
 
-    -- Drawing runs inside the same temp guard. The geometry is rebuilt only when it changes
-    -- (see the drawing section); the usual frame does no geometry work at all. The cost is
-    -- now MEASURED rather than argued about, through clock_ms() - the coarse os.clock() could
-    -- not see the cost the player could feel, which is why the first version shipped with a
-    -- frame rate complaint against it.
+    -- The clock is read once, here, because the corridor gate needs it and it used to be
+    -- declared further down. The offline harness caught that as a nil comparison on the very
+    -- first frame - which in game would have thrown inside the engine's update call, every
+    -- frame, for the whole session.
+    local now_ms = clock_ms()
+
+    -- The corridor is refreshed at its own rate, inside the same temp guard, and only after
+    -- the startup grace: engine accessors called too early are where a native crash lives.
+    if ok and M.draw_enabled and not M.draw_off
+        and now_ms >= (M.corridor_next or 0)
+        and (os.clock() - (M.started or 0)) > STARTUP_GRACE_S then
+        M.corridor_next = now_ms + (1000 / CORRIDOR_HZ)
+        pcall(corridor_tick)
+    end
+
+    -- The draw itself runs inside the same temp guard. Its geometry is rebuilt only when it
+    -- changes, so the usual frame does no geometry work at all - which is where the frame rate
+    -- came back from. The cost is MEASURED now, through clock_ms(); the coarse os.clock() could
+    -- not see the cost the player could feel.
     local draw_began = clock_ms()
     if ok and M.draw_enabled and not M.draw_off then pcall(draw_corridor) end
     local draw_spent = clock_ms() - draw_began
@@ -1220,13 +1289,13 @@ local function guarded()
     -- Frame interval, so "the frame rate dropped" becomes a number in the log instead of an
     -- impression. Peak and a slow-frame count, not an average, because a stutter is what is
     -- actually felt.
-    local now_ms = clock_ms()
+    local after_ms = clock_ms()
     if M.frame_last ~= nil then
-        local gap = now_ms - M.frame_last
+        local gap = after_ms - M.frame_last
         if gap > (M.frame_peak_ms or 0) and gap < 2000 then M.frame_peak_ms = gap end
         if gap > 50 then M.frame_slow = (M.frame_slow or 0) + 1 end
     end
-    M.frame_last = now_ms
+    M.frame_last = after_ms
 
     local spent = clock_ms() - began
     M.last_tick_ms = spent
@@ -1411,6 +1480,7 @@ local function install()
         end)
     end
 
+    M.started = os.clock()
     M.status = 'running'
     guarded()
     return M

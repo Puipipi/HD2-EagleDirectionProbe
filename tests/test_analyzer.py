@@ -545,6 +545,25 @@ class CorridorFeedbackTest(unittest.TestCase):
         # height is ground level.
         self.assertIn('rec.settled and p', self.source)
 
+    def test_the_ground_line_does_not_depend_on_the_aircraft_track(self):
+        """The 0.8.0 bug the player saw as "a white cross that vanished instantly".
+
+        The ground geometry was inside the `head and n >= 1` branch, so the moment the
+        aircraft left, the track emptied and the ground line went with it - the one thing
+        meant to answer "where does this land" was tied to the thing that had already gone.
+        The offline harness reproduced it: seg collapsed to 0 when the aircraft left.
+        """
+        body = self.source.split('local function build_geometry()', 1)[1].split(
+            '\nlocal function', 1)[0]
+        # The impact ribbons must come before the aircraft-track branch opens.
+        impact_at = body.index('local imp = M.impact')
+        track_at = body.index('if head and n >= 1 then')
+        self.assertLess(impact_at, track_at,
+                        'the ground line must be built outside the aircraft-track branch')
+
+    def test_a_new_throw_clears_the_previous_impact(self):
+        self.assertIn('M.impact = nil', self.source)
+
     def test_the_lines_are_ribbons_not_single_lines(self):
         """Complaint 3a: one thin line is invisible, and worse so at range.
 
@@ -559,19 +578,41 @@ class CorridorFeedbackTest(unittest.TestCase):
         self.assertIsNotNone(strands)
         self.assertGreaterEqual(int(strands.group(1)), 3, 'a single strand is the old bug')
 
-    def test_the_colour_is_white(self):
+    def test_the_colours_are_argb_and_white(self):
         """Complaint 3b: the colour was hard to see; the player asked for white.
 
-        White is also the one choice that survives a channel-order mistake, since any
-        permutation of 255,255,255 is still white - the reported purple suggests something
-        about the colour path was not what I assumed.
+        It came out YELLOW, and that is what proves the order. White as {255,255,255,190}
+        reads as (a=255, r=255, g=255, b=190) -> pale yellow. 0.7.0's {255,190,40,110} reads as
+        an opaque (190,40,110) -> the purple the player reported. Both fit ARGB and nothing else
+        does; a mod that draws here also names its colour table `argb`.
         """
         for name in ('COLOR_AIR', 'COLOR_GROUND'):
             match = re.search(r'local %s = \{([^}]*)\}' % name, self.source)
             self.assertIsNotNone(match, name)
             channels = [int(v) for v in re.findall(r'\d+', match.group(1))]
-            self.assertEqual(channels[:3], [255, 255, 255],
-                             '%s must be white' % name)
+            alpha, rgb = channels[0], channels[1:4]
+            self.assertEqual(rgb, [255, 255, 255], '%s must be white in r,g,b' % name)
+            self.assertLessEqual(alpha, 255)
+            self.assertGreater(alpha, 0, '%s must not be invisible' % name)
+
+    def test_the_corridor_refresh_rate_is_not_the_log_rate(self):
+        """Complaint 3c: "it feels like it was only drawn a few times".
+
+        That was literal: the corridor was refreshed from the sampling path, so the log's
+        5 Hz was also the line's 5 Hz. The rates are separate now.
+        """
+        self.assertIn('CORRIDOR_HZ', self.source)
+        self.assertIn('local function corridor_tick()', self.source)
+        rate = int(re.search(r'local CORRIDOR_HZ = (\d+)', self.source).group(1))
+        sample = int(re.search(r'local SAMPLE_HZ = (\d+)', self.source).group(1))
+        self.assertGreater(rate, sample,
+                           'the corridor must refresh faster than the log samples')
+        # ...and the sampling path must NOT be what feeds the track any more. Match a CALL,
+        # not the definition: `local function update_trail(eagle_entries)` contains the same
+        # substring, and a blunt test fails on its own function signature.
+        self.assertIsNone(re.search(r'(?<!function )update_trail\(eagle_entries\)',
+                                    self.source),
+                          'the sampling path must not feed the corridor track')
 
     def test_the_line_is_asked_to_survive_geometry(self):
         """Complaint 3c: buildings hid the corridor.
