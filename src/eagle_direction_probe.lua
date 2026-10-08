@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '0.7.0',
+    version = '0.8.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -58,6 +58,22 @@ local M = {
     selftest = false,
     selftest_origin = nil,
     selftest_frames = 0,
+    selftest_seg = nil,
+    -- cached geometry: built on change, reused every frame
+    seg = nil,
+    geom_key = nil,
+    need_submit = false,
+    seg_count = 0,
+    submits = 0,
+    color_air = nil,
+    color_ground = nil,
+    anchor = nil,
+    impact = nil,           -- where the thrown beacon came to rest = the impact point
+    through_world = true,   -- create_line_object flag; OCCLUDED_FILE flips it back
+    every_frame = false,    -- submit once per frame instead of once per geometry change
+    frame_last = nil,       -- high-resolution frame clock, for the honest timing report
+    frame_peak_ms = 0,
+    frame_slow = 0,
 }
 rawset(_G, MOD_KEY, M)
 
@@ -167,14 +183,37 @@ local THROW_SPEED_MPS = 8
 -- identity keys return zero units). A width would therefore be a guess, and a wrong width
 -- on a 500kg - which is a point strike, not a line - would actively mislead. An axis is
 -- true for every stratagem, so it is what this ships.
-local TRAIL_MAX = 64            -- samples of ground track kept (about 13 s at 5 Hz)
+--
+-- 0.8.0, from the first real in-mission report: the corridor was hard to see. Three causes,
+-- all addressed here. (1) Frame rate dropped - the fix is to stop building vectors every
+-- frame and to stop re-submitting geometry that has not moved. (2) A single thin line is
+-- invisible at range, so every line is now a ribbon of parallel strands, and the strand
+-- spacing grows with distance so the ribbon keeps a constant width ON SCREEN instead of
+-- thinning to nothing far away. (3) It was occluded by buildings, so the line object is now
+-- created with the flag a proven mod uses for geometry it wants seen through the world.
+-- Colour is white now: the player asked for it, and white is also the one colour that
+-- survives a channel-order mistake, since a permutation of 255,255,255 is still white.
+local TRAIL_MAX = 24            -- ground track points kept (about 5 s at 5 Hz)
 local FORWARD_M = 900           -- how far ahead to extend along the current heading
 local ARROW_M = 90              -- arrowhead arm length
+local GROUND_HALF_M = 140       -- ground impact line: half its length along the axis
+local GROUND_CROSS_M = 45       -- the perpendicular tick at the impact point
+
+-- Lateral offset between strands is this fraction of the distance to the anchor, so the
+-- ribbon subtends a constant angle. Calibrated for roughly one pixel per step at 1080p with
+-- a ~50 degree vertical field of view; it cannot be exact, because the camera position is
+-- not readable without FFI and this probe has none.
+local STRAND_STEP_PER_M = 0.0012
+local AIR_STRANDS = 3
+local GROUND_STRANDS = 5
+
 local DRAW_BUDGET_MS = 8        -- one frame's drawing should fit in this
 local DRAW_SLOW_BEFORE_OFF = 8  -- consecutive breaches before drawing switches itself off
 local KILL_SWITCH = nil         -- set in the paths section; a file that disables drawing
-local COLOR_TRAIL = { 255, 190, 40, 110 }
-local COLOR_HEAD = { 255, 70, 40, 230 }
+local OCCLUDED_FILE = nil       -- ...a file that puts the lines back behind geometry
+local EVERYFRAME_FILE = nil     -- ...a file that forces one submission per frame
+local COLOR_AIR = { 255, 255, 255, 190 }
+local COLOR_GROUND = { 255, 255, 255, 235 }
 
 -- Only sample inside a mission. 0.2.0 sampled whenever a beacon-like object existed,
 -- and a stationary one exists on the ship: selecting a stratagem in the loadout
@@ -211,6 +250,20 @@ KILL_SWITCH = HOME .. '/EagleCorridor.off'
 -- line API can be proven on this build WITHOUT a mission - the riskiest new thing in 0.7.0
 -- is the drawing path, and needing an Eagle to test it would be the wrong dependency.
 SELFTEST_FILE = HOME .. '/EagleCorridor.selftest'
+
+-- Two more files, because two things in 0.8.0 rest on evidence I could not settle offline:
+--
+--   OCCLUDED_FILE   the create_line_object flag is copied from a mod that uses `true` for
+--                   world geometry, and the player reported the `false` lines being hidden
+--                   by buildings - so `true` is now the default. I have NOT proven what the
+--                   flag means. If `true` renders wrongly, this file restores `false`
+--                   without a rebuild.
+--   EVERYFRAME_FILE the corridor now re-submits only when its geometry changes, which is
+--                   where most of the per-frame cost went. `reset` only makes sense if a
+--                   line object persists between frames, which is why this is safe to try -
+--                   but if the line flickers, this file forces the old per-frame submission.
+OCCLUDED_FILE = HOME .. '/EagleCorridor.occluded'
+EVERYFRAME_FILE = HOME .. '/EagleCorridor.everyframe'
 
 local log_file
 local function log(line)
@@ -402,6 +455,22 @@ end
 local function temp_guard_end(saved)
     if saved == nil then return end
     pcall(sr.Script.set_temp_byte_count, saved)
+end
+
+-- A clock that can actually measure a frame.
+--
+-- os.clock() on this engine has roughly 15.6 ms granularity - every engine query in this
+-- probe measures 0.0 ms against it - so the earlier "budgets" could not see the drawing cost
+-- that the player could feel. HD2_HUD_Plus reads sr.Application.time_since_launch(), so the
+-- engine does expose a monotonic clock; this returns milliseconds from it and falls back to
+-- os.clock() only if the call is missing.
+local function clock_ms()
+    local app = sr and sr.Application
+    if type(app) == 'table' and type(app.time_since_launch) == 'function' then
+        local ok, value = pcall(app.time_since_launch)
+        if ok and type(value) == 'number' then return value * 1000 end
+    end
+    return os.clock() * 1000
 end
 
 -- Are we actually in a mission? A beacon-identity prop exists on the ship and does not
@@ -687,9 +756,12 @@ local function sample_body()
         M.next_status = now + STATUS_S
         log(string.format('status: worlds=%s session=%s (%s) beacon_units=%d '
             .. 'aircraft_units=%d temp_bytes=%s last_tick=%.1fms samples=%d calls=%d '
-            .. 'backoff=x%d', tostring(count_worlds()), tostring(live), tostring(why),
-            #beacon_entries, #eagle_entries, tostring(M.last_temp_bytes),
-            M.last_tick_ms or 0, M.samples, M.calls, M.backoff or 1))
+            .. 'backoff=x%d draw=%.2fms peak_draw=%.2fms frame_peak=%.1fms slow_frames=%d '
+            .. 'segments=%d submits=%d', tostring(count_worlds()), tostring(live),
+            tostring(why), #beacon_entries, #eagle_entries, tostring(M.last_temp_bytes),
+            M.last_tick_ms or 0, M.samples, M.calls, M.backoff or 1,
+            M.draw_last_ms or 0, M.draw_peak_ms or 0, M.frame_peak_ms or 0,
+            M.frame_slow or 0, M.seg_count or 0, M.submits or 0))
         emit({ kind = 'status', t = now,
                note = string.format('worlds=%s session=%s beacon=%d aircraft=%d',
                    tostring(count_worlds()), tostring(live), #beacon_entries,
@@ -742,6 +814,12 @@ local function sample_body()
         end
         if rec and rec.thrown and thrown == nil then thrown = entry.unit end
         entry.primary = (rec ~= nil and rec.thrown == true) or false
+        -- The thrown beacon's latest position is the impact point once it has settled: it is
+        -- lying on the ground, so its height IS ground level, and the ground line has to be
+        -- drawn there rather than at the aircraft's altitude.
+        if entry.primary and rec and rec.settled and p then
+            M.impact = { p[1], p[2], p[3] }
+        end
     end
 
     if #beacon_entries > 0 and thrown == nil and now >= (M.next_static_report or 0) then
@@ -863,20 +941,183 @@ local function release_line()
         pcall(sr.World.destroy_line_object, M.line_world, M.line)
     end
     M.line, M.line_world = nil, nil
+    M.seg, M.geom_key, M.need_submit = nil, nil, false
 end
 
 local function ensure_line(world)
     if M.line and M.line_world == world then return M.line end
     release_line()
-    local ok, line = pcall(sr.World.create_line_object, world, false)
+    -- The second argument is copied from a mod that uses `true` for the world geometry it
+    -- wants seen through the world, and the player reported the `false` lines being hidden
+    -- by buildings. I have NOT established what the flag means; OCCLUDED_FILE puts it back.
+    local ok, line = pcall(sr.World.create_line_object, world, M.through_world)
     if not ok or line == nil then return nil end
     M.line, M.line_world = line, world
     return line
 end
 
--- Called every frame. The geometry is cached; this only re-submits it, because a
--- dispatched line object is a per-frame submission and would otherwise vanish between
--- samples.
+-- ---------------------------------------------------------------- the geometry --
+-- Built ONCE per geometry change, and kept as Vector3 objects.
+--
+-- Constructing them every frame was the per-frame cost that showed up as a frame rate drop:
+-- 64 segments x 2 endpoints x 60 frames is roughly 7,700 temporaries a second in the script
+-- temp arena. Nothing here runs per frame any more.
+local function colour(kind)
+    if kind == 'ground' then
+        if M.color_ground == nil then
+            M.color_ground = sr.Color(COLOR_GROUND[1], COLOR_GROUND[2], COLOR_GROUND[3],
+                COLOR_GROUND[4])
+        end
+        return M.color_ground
+    end
+    if M.color_air == nil then
+        M.color_air = sr.Color(COLOR_AIR[1], COLOR_AIR[2], COLOR_AIR[3], COLOR_AIR[4])
+    end
+    return M.color_air
+end
+
+-- One ribbon: `strands` parallel copies of a segment, offset laterally.
+--
+-- The offset grows with the distance to the anchor, so the ribbon subtends a constant angle
+-- and stays the same width on screen instead of thinning to nothing at range. A single line
+-- is one pixel wide no matter how important it is, which is why the first version was
+-- invisible in practice.
+local function add_ribbon(seg, ax, ay, az, bx, by, bz, strands, kind)
+    local dx, dy = bx - ax, by - ay
+    local len = math.sqrt(dx * dx + dy * dy)
+    local c = colour(kind)
+    if len <= 0 or strands <= 1 then
+        seg[#seg + 1] = { c, sr.Vector3(ax, ay, az), sr.Vector3(bx, by, bz) }
+        return
+    end
+    local px, py = -dy / len, dx / len
+    local mx, my, mz = (ax + bx) / 2, (ay + by) / 2, (az + bz) / 2
+    local a = M.anchor
+    local dist = 100
+    if a then
+        dist = math.sqrt((mx - a[1]) ^ 2 + (my - a[2]) ^ 2 + (mz - a[3]) ^ 2)
+    end
+    local step = STRAND_STEP_PER_M * math.max(dist, 15)
+    local half = (strands - 1) / 2
+    for i = -half, half do
+        local o = i * step
+        seg[#seg + 1] = { c, sr.Vector3(ax + px * o, ay + py * o, az),
+                          sr.Vector3(bx + px * o, by + py * o, bz) }
+    end
+end
+
+local function build_geometry()
+    local seg = {}
+    local trail = M.trail
+    local n = #trail
+    local head = M.trail_heading
+
+    -- The anchor is the point the lines are measured against for width scaling. The landed
+    -- beacon or the aircraft's own position is the best proxy available for the camera, which
+    -- this probe cannot read (no FFI).
+    M.anchor = M.impact or trail[n] or M.anchor
+
+    -- 1. The aircraft's actual ground track.
+    for i = 1, n - 1 do
+        local a, b = trail[i], trail[i + 1]
+        add_ribbon(seg, a[1], a[2], a[3], b[1], b[2], b[3], AIR_STRANDS, 'air')
+    end
+
+    if head and n >= 1 then
+        local p = trail[n]
+        local tx = p[1] + head[1] * FORWARD_M
+        local ty = p[2] + head[2] * FORWARD_M
+        local tz = p[3] + head[3] * FORWARD_M
+
+        -- 2. Forward extension and an arrowhead, in the horizontal plane.
+        add_ribbon(seg, p[1], p[2], p[3], tx, ty, tz, AIR_STRANDS, 'air')
+        local bx, by = -head[1], -head[2]
+        local len = math.sqrt(bx * bx + by * by)
+        if len > 0 then
+            bx, by = bx / len, by / len
+            local px, py = -by, bx
+            for _, s in ipairs({ 1, -1 }) do
+                add_ribbon(seg, tx, ty, tz,
+                    tx + (bx + px * s) * ARROW_M, ty + (by + py * s) * ARROW_M, tz,
+                    AIR_STRANDS, 'air')
+            end
+        end
+
+        -- 3. The ground line: what the first in-mission report said was missing. The
+        -- aircraft's line alone does not tell you where the ordnance lands, so this is the
+        -- impact axis drawn at the landed beacon's own height - which IS ground level,
+        -- because the beacon is lying on it - plus a perpendicular tick on the impact point.
+        local imp = M.impact
+        if imp then
+            local hx, hy = head[1], head[2]
+            local hlen = math.sqrt(hx * hx + hy * hy)
+            if hlen > 0 then
+                hx, hy = hx / hlen, hy / hlen
+                add_ribbon(seg,
+                    imp[1] - hx * GROUND_HALF_M, imp[2] - hy * GROUND_HALF_M, imp[3],
+                    imp[1] + hx * GROUND_HALF_M, imp[2] + hy * GROUND_HALF_M, imp[3],
+                    GROUND_STRANDS, 'ground')
+                add_ribbon(seg,
+                    imp[1] + hy * GROUND_CROSS_M, imp[2] - hx * GROUND_CROSS_M, imp[3],
+                    imp[1] - hy * GROUND_CROSS_M, imp[2] + hx * GROUND_CROSS_M, imp[3],
+                    GROUND_STRANDS, 'ground')
+            end
+        end
+    end
+    M.seg = seg
+    return #seg
+end
+
+-- What the geometry currently is, cheaply. A change here is what triggers a rebuild and a
+-- re-submission; nothing else does, which is where the frame rate came back from.
+local function geometry_key()
+    local trail = M.trail
+    local n = #trail
+    local last = trail[n]
+    local head = M.trail_heading
+    local imp = M.impact
+    return table.concat({
+        n,
+        last and string.format('%.1f,%.1f,%.1f', last[1], last[2], last[3]) or '-',
+        head and string.format('%.3f,%.3f', head[1], head[2]) or '-',
+        imp and string.format('%.1f,%.1f,%.1f', imp[1], imp[2], imp[3]) or '-',
+    }, '|')
+end
+
+local function submit_geometry()
+    local world, line, seg = M.line_world, M.line, M.seg
+    if world == nil or line == nil or seg == nil then return false end
+    local ok = pcall(function()
+        sr.LineObject.reset(line)
+        for i = 1, #seg do
+            local s = seg[i]
+            sr.LineObject.add_line(line, s[1], s[2], s[3])
+        end
+        sr.LineObject.dispatch(world, line)
+    end)
+    if not ok then
+        M.errors = M.errors + 1
+        M.draw_off = true
+        log('corridor drawing ERRORED and switched itself off; sampling continues')
+        return false
+    end
+    M.submits = (M.submits or 0) + 1
+    M.seg_count = #seg
+    return true
+end
+
+local function hide_line()
+    if M.line and M.line_world then
+        pcall(function()
+            sr.LineObject.reset(M.line)
+            local z = sr.Vector3(0, 0, 0)
+            sr.LineObject.add_line(M.line, sr.Color(0, 0, 0, 0), z, z)
+            sr.LineObject.dispatch(M.line_world, M.line)
+        end)
+    end
+    M.seg, M.geom_key, M.need_submit = nil, nil, false
+end
+
 local function draw_corridor()
     -- drawing_allowed re-checks the kill-switch file at most every 2 s, so the escape hatch
     -- works DURING a session and not only at load. It was written and then not called, which
@@ -898,27 +1139,27 @@ local function draw_corridor()
             return
         end
         local o = M.selftest_origin
-        local ok = pcall(function()
-            sr.LineObject.reset(line)
-            local mid = { o[1] + 60, o[2], o[3] + 1.5 }
-            sr.LineObject.add_line(line, sr.Color(0, 255, 128, 220),
-                sr.Vector3(o[1], o[2], o[3] + 1.5), sr.Vector3(mid[1], mid[2], mid[3]))
-            sr.LineObject.add_line(line, sr.Color(0, 255, 128, 220),
-                sr.Vector3(mid[1], mid[2], mid[3]),
-                sr.Vector3(o[1] + 120, o[2], o[3] + 1.5))
-            sr.LineObject.dispatch(world, line)
-        end)
+        if M.selftest_seg == nil then
+            local seg = {}
+            add_ribbon(seg, o[1], o[2], o[3] + 1.5, o[1] + 60, o[2], o[3] + 1.5,
+                3, 'ground')
+            add_ribbon(seg, o[1] + 60, o[2], o[3] + 1.5, o[1] + 120, o[2], o[3] + 1.5,
+                3, 'ground')
+            M.selftest_seg = seg
+        end
+        M.seg = M.selftest_seg
+        local ok = submit_geometry()
         M.selftest_frames = M.selftest_frames + 1
         if not ok then
             M.selftest = false
-            M.draw_off = true
             log('SELFTEST FAILED: the line API raised. Corridor disabled; sampling '
                 .. 'continues.')
             release_line()
             emit({ kind = 'selftest', t = os.clock(), note = 'failed' })
         elseif M.selftest_frames >= 240 then
             M.selftest = false
-            log(string.format('SELFTEST OK: drew a 120 m line for %d frames beside the '
+            M.selftest_seg = nil
+            log(string.format('SELFTEST OK: drew a 120 m ribbon for %d frames beside the '
                 .. 'ship, then released it. The line API works on this build.',
                 M.selftest_frames))
             emit({ kind = 'selftest', t = os.clock(), note = 'ok' })
@@ -927,94 +1168,67 @@ local function draw_corridor()
         return
     end
 
-    if #trail == 0 then
+    if #trail == 0 and M.impact == nil then
         -- Nothing to show: hide any line left over from the previous pass rather than
         -- leaving a stale corridor on screen after the aircraft is gone.
-        if M.line and M.line_world then
-            pcall(function()
-                sr.LineObject.reset(M.line)
-                local z = sr.Vector3(0, 0, 0)
-                sr.LineObject.add_line(M.line, sr.Color(0, 0, 0, 0), z, z)
-                sr.LineObject.dispatch(M.line_world, M.line)
-            end)
-        end
+        hide_line()
         return
     end
+
     local world = main_world()
     if world == nil then return end
-    local line = ensure_line(world)
-    if line == nil then return end
-    local ok = pcall(function()
-        sr.LineObject.reset(line)
-        local trail = M.trail
-        local n = #trail
-        for i = 1, n - 1 do
-            sr.LineObject.add_line(line, sr.Color(COLOR_TRAIL[1], COLOR_TRAIL[2],
-                COLOR_TRAIL[3], COLOR_TRAIL[4]),
-                sr.Vector3(trail[i][1], trail[i][2], trail[i][3]),
-                sr.Vector3(trail[i + 1][1], trail[i + 1][2], trail[i + 1][3]))
-        end
-        local head = M.trail_heading
-        if head and n >= 1 then
-            local p = trail[n]
-            local ahead = { p[1] + head[1] * FORWARD_M, p[2] + head[2] * FORWARD_M,
-                            p[3] + head[3] * FORWARD_M }
-            sr.LineObject.add_line(line, sr.Color(COLOR_HEAD[1], COLOR_HEAD[2],
-                COLOR_HEAD[3], COLOR_HEAD[4]), sr.Vector3(p[1], p[2], p[3]),
-                sr.Vector3(ahead[1], ahead[2], ahead[3]))
-            -- Arrowhead: two arms swept back from the far end, in the horizontal plane.
-            local bx, by = -head[1], -head[2]
-            local len = math.sqrt(bx * bx + by * by)
-            if len > 0 then
-                bx, by = bx / len, by / len
-                local px, py = -by, bx
-                local tip = ahead
-                for _, s in ipairs({ 1, -1 }) do
-                    sr.LineObject.add_line(line, sr.Color(COLOR_HEAD[1], COLOR_HEAD[2],
-                        COLOR_HEAD[3], COLOR_HEAD[4]),
-                        sr.Vector3(tip[1], tip[2], tip[3]),
-                        sr.Vector3(tip[1] + (bx + px * s) * ARROW_M,
-                                   tip[2] + (by + py * s) * ARROW_M,
-                                   tip[3]))
-                end
-            end
-        end
-        sr.LineObject.dispatch(world, line)
-    end)
-    if not ok then
-        M.errors = M.errors + 1
-        M.draw_off = true
-        log('corridor drawing ERRORED and switched itself off; sampling continues')
+    if ensure_line(world) == nil then return end
+
+    local key = geometry_key()
+    if key ~= M.geom_key then
+        M.geom_key = key
+        M.need_submit = true
+        build_geometry()
+    end
+
+    -- Submit when the geometry changed, and otherwise only if the player asked for the
+    -- per-frame behaviour. `reset` only exists because a line object keeps state between
+    -- frames, which is why submitting only on change should hold the picture - but that is
+    -- the one thing here I could not verify offline, so EVERYFRAME_FILE reverts it.
+    if M.need_submit or M.every_frame then
+        if submit_geometry() then M.need_submit = false end
     end
     M.draw_frames = M.draw_frames + 1
 end
+
 
 -- Every tick runs inside the temp-byte-count guard and is timed. A tick that busts the
 -- budget slows the probe down; a run of them stops it. A probe that can degrade the
 -- game is not worth its data, and 0.2.0 had neither guard.
 local function guarded()
-    local began = os.clock()
+    local began = clock_ms()
     local saved = temp_guard_begin()
     local ok, reason = pcall(sample_body)
 
-    -- The corridor is re-submitted EVERY frame, inside the same temp guard. A dispatched
-    -- line object is a per-frame submission, so dispatching only at the sample rate would
-    -- make it flicker or vanish; the geometry it submits is cached and recomputed at the
-    -- sample rate, so the per-frame cost is just the submission.
-    --
-    -- The cost guarantee here is DETERMINISTIC, not measured: at most TRAIL_MAX-1 segments
-    -- plus three for the head and arrowhead, capped by construction. os.clock() on this
-    -- engine has roughly 15.6 ms granularity - every query in this probe measures 0.0 ms
-    -- against it - so a fine-grained draw budget could not be believed even if it were
-    -- computed. A non-zero reading therefore means something gross, and a run of those
-    -- switches drawing off on its own.
-    local draw_began = os.clock()
+    -- Drawing runs inside the same temp guard. The geometry is rebuilt only when it changes
+    -- (see the drawing section); the usual frame does no geometry work at all. The cost is
+    -- now MEASURED rather than argued about, through clock_ms() - the coarse os.clock() could
+    -- not see the cost the player could feel, which is why the first version shipped with a
+    -- frame rate complaint against it.
+    local draw_began = clock_ms()
     if ok and M.draw_enabled and not M.draw_off then pcall(draw_corridor) end
-    local draw_spent = (os.clock() - draw_began) * 1000
+    local draw_spent = clock_ms() - draw_began
     M.draw_last_ms = draw_spent
     if draw_spent > (M.draw_peak_ms or 0) then M.draw_peak_ms = draw_spent end
     temp_guard_end(saved)
-    local spent = (os.clock() - began) * 1000
+
+    -- Frame interval, so "the frame rate dropped" becomes a number in the log instead of an
+    -- impression. Peak and a slow-frame count, not an average, because a stutter is what is
+    -- actually felt.
+    local now_ms = clock_ms()
+    if M.frame_last ~= nil then
+        local gap = now_ms - M.frame_last
+        if gap > (M.frame_peak_ms or 0) and gap < 2000 then M.frame_peak_ms = gap end
+        if gap > 50 then M.frame_slow = (M.frame_slow or 0) + 1 end
+    end
+    M.frame_last = now_ms
+
+    local spent = clock_ms() - began
     M.last_tick_ms = spent
     M.last_temp_bytes = saved
     if spent > (M.slowest_tick_ms or 0) then M.slowest_tick_ms = spent end
@@ -1026,13 +1240,13 @@ local function guarded()
         return
     end
 
-    -- A draw that registers at all on a ~15.6 ms clock is gross, so a short run of them is
-    -- enough to stop drawing. Sampling deliberately continues: losing the corridor is
-    -- survivable, losing the measurement is not.
+    -- A draw that costs a meaningful fraction of a frame, repeatedly, is not worth keeping.
+    -- Sampling deliberately continues: losing the corridor is survivable, losing the
+    -- measurement is not.
     if draw_spent > DRAW_BUDGET_MS and not M.draw_off then
         M.draw_slow = (M.draw_slow or 0) + 1
-        log(string.format('slow draw: %.1f ms on the ~15.6 ms clock (slow #%d of %d)',
-            draw_spent, M.draw_slow, DRAW_SLOW_BEFORE_OFF))
+        log(string.format('slow draw: %.1f ms (slow #%d of %d; %d segment(s))',
+            draw_spent, M.draw_slow, DRAW_SLOW_BEFORE_OFF, M.seg_count or 0))
         if M.draw_slow >= DRAW_SLOW_BEFORE_OFF then
             M.draw_off = true
             release_line()
@@ -1129,13 +1343,31 @@ local function install()
         if oks and sh then
             pcall(sh.close, sh)
             M.selftest = true
-            log('SELFTEST requested: a 120 m line will be drawn beside the ship for ~4 s, '
+            log('SELFTEST requested: a 120 m ribbon will be drawn beside the ship for ~4 s, '
                 .. 'then released. Delete ' .. SELFTEST_FILE .. ' to stop asking for it.')
         end
+        -- The two reversals for the things I could not settle offline.
+        local oko, oh = pcall(io.open, OCCLUDED_FILE, 'r')
+        if oko and oh then
+            pcall(oh.close, oh)
+            M.through_world = false
+        end
+        local oke, eh = pcall(io.open, EVERYFRAME_FILE, 'r')
+        if oke and eh then
+            pcall(eh.close, eh)
+            M.every_frame = true
+        end
     end
-    log(string.format('corridor: %s (actual flight path + heading arrow, no width - '
-        .. 'a width would be a per-stratagem guess we cannot yet make). Kill switch: %s',
-        M.draw_enabled and 'ON' or 'OFF', KILL_SWITCH))
+    local app = sr.Application
+    local has_clock = type(app) == 'table'
+        and type(rawget(app, 'time_since_launch')) == 'function'
+    log(string.format('corridor: %s | ground impact line: yes | white, %d air / %d ground '
+        .. 'strands | through geometry: %s | submit: %s | clock: %s',
+        M.draw_enabled and 'ON' or 'OFF', AIR_STRANDS, GROUND_STRANDS,
+        tostring(M.through_world), M.every_frame and 'every frame' or 'on geometry change',
+        has_clock and 'Application.time_since_launch (measured)' or 'os.clock (coarse)'))
+    log(string.format('files: off=%s occluded=%s everyframe=%s selftest=%s',
+        KILL_SWITCH, OCCLUDED_FILE, EVERYFRAME_FILE, SELFTEST_FILE))
     log(string.format('v%s: %d Hz, in-session only, %d ms tick budget, self-disables '
         .. 'after %d slow ticks, %d s startup grace', M.version, SAMPLE_HZ,
         TICK_BUDGET_MS, SLOW_TICKS_BEFORE_STOP, STARTUP_GRACE_S))
@@ -1162,9 +1394,12 @@ local function install()
                     .. 'slowest_tick=%.1fms slow_ticks=%d backoff=x%d', M.samples,
                     M.calls, M.errors, M.reads, M.slowest_tick_ms or 0, M.slow_ticks,
                     M.backoff or 1))
-                log(string.format('  corridor: frames=%d peak_draw=%.1fms draw_off=%s '
-                    .. 'enabled=%s', M.draw_frames, M.draw_peak_ms or 0,
+                log(string.format('  corridor: frames=%d submits=%d segments=%d '
+                    .. 'peak_draw=%.2fms draw_off=%s enabled=%s', M.draw_frames,
+                    M.submits or 0, M.seg_count or 0, M.draw_peak_ms or 0,
                     tostring(M.draw_off), tostring(M.draw_enabled)))
+                log(string.format('  frames: peak_gap=%.1fms slow_frames=%d '
+                    .. '(slow = over 50 ms)', M.frame_peak_ms or 0, M.frame_slow or 0))
                 release_line()
                 for _, row in ipairs(M.key_costs) do
                     log(string.format('  query cost %-18s units=%d %.2f ms',

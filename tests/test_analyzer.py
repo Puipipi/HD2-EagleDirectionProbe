@@ -507,5 +507,92 @@ class CostContractTest(unittest.TestCase):
                              'a timeout this long will merge consecutive throws again')
 
 
+class CorridorFeedbackTest(unittest.TestCase):
+    """The four things the first in-mission report complained about.
+
+    Each one is pinned here, because each was a real defect that no offline check caught:
+    they only showed up when someone looked at the screen.
+    """
+
+    def setUp(self):
+        self.source = SOURCE_PATH.read_text(encoding='utf-8')
+
+    def submit_body(self):
+        """The per-frame submission path only - no geometry building allowed in here."""
+        return self.source.split('local function submit_geometry()', 1)[1].split(
+            '\nlocal function', 1)[0]
+
+    def test_frame_rate_geometry_is_not_built_every_frame(self):
+        """Complaint 1: the frame rate dropped.
+
+        The cause was constructing Vector3 objects per frame - 64 segments x 2 endpoints x 60
+        frames is about 7,700 temporaries a second in the script temp arena. Geometry is now
+        built once per change and the per-frame path only re-submits what is cached.
+        """
+        body = self.submit_body()
+        self.assertNotIn('sr.Vector3', body,
+                         'no vector may be constructed in the per-frame submit path')
+        self.assertIn('local function build_geometry()', self.source)
+        self.assertIn('geom_key', self.source)
+        self.assertIn('M.need_submit', self.source)
+
+    def test_there_is_a_ground_impact_line(self):
+        """Complaint 2: the aircraft line alone does not show where the ordnance lands."""
+        self.assertIn('GROUND_HALF_M', self.source)
+        self.assertIn('GROUND_CROSS_M', self.source)
+        self.assertIn('M.impact', self.source)
+        # The impact point is the settled thrown beacon - which lies on the ground, so its
+        # height is ground level.
+        self.assertIn('rec.settled and p', self.source)
+
+    def test_the_lines_are_ribbons_not_single_lines(self):
+        """Complaint 3a: one thin line is invisible, and worse so at range.
+
+        Every line is now several parallel strands, and the spacing grows with distance to the
+        anchor so the ribbon keeps a constant width on screen.
+        """
+        self.assertIn('AIR_STRANDS', self.source)
+        self.assertIn('GROUND_STRANDS', self.source)
+        self.assertIn('STRAND_STEP_PER_M', self.source)
+        self.assertIn('local function add_ribbon(', self.source)
+        strands = re.search(r'local AIR_STRANDS = (\d+)', self.source)
+        self.assertIsNotNone(strands)
+        self.assertGreaterEqual(int(strands.group(1)), 3, 'a single strand is the old bug')
+
+    def test_the_colour_is_white(self):
+        """Complaint 3b: the colour was hard to see; the player asked for white.
+
+        White is also the one choice that survives a channel-order mistake, since any
+        permutation of 255,255,255 is still white - the reported purple suggests something
+        about the colour path was not what I assumed.
+        """
+        for name in ('COLOR_AIR', 'COLOR_GROUND'):
+            match = re.search(r'local %s = \{([^}]*)\}' % name, self.source)
+            self.assertIsNotNone(match, name)
+            channels = [int(v) for v in re.findall(r'\d+', match.group(1))]
+            self.assertEqual(channels[:3], [255, 255, 255],
+                             '%s must be white' % name)
+
+    def test_the_line_is_asked_to_survive_geometry(self):
+        """Complaint 3c: buildings hid the corridor.
+
+        The flag is copied from a mod that draws world geometry with `true`. It is NOT proven,
+        so a file puts it back without a rebuild.
+        """
+        self.assertIn('M.through_world', self.source)
+        self.assertIn('EagleCorridor.occluded', self.source)
+
+    def test_the_frame_cost_is_measured_not_asserted(self):
+        """The first version argued the cost could not be measured; that was wrong.
+
+        sr.Application.time_since_launch() is a real clock - HD2_HUD_Plus uses it - so the
+        draw and the frame interval are now numbers in the log.
+        """
+        self.assertIn('local function clock_ms()', self.source)
+        self.assertIn('time_since_launch', self.source)
+        self.assertIn('frame_peak_ms', self.source)
+        self.assertIn('frame_slow', self.source)
+
+
 if __name__ == '__main__':
     unittest.main()
