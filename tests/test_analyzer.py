@@ -231,7 +231,17 @@ class SourceGateTest(unittest.TestCase):
 
 
 class ReadOnlyContractTest(unittest.TestCase):
-    """The addon must not contain a write path. This is the whole safety claim."""
+    """The addon must not contain a write path. This is the whole safety claim.
+
+    CHANGED DELIBERATELY in 0.7.0: this class used to forbid `LineObject.add_line`, because
+    the addon drew nothing. It now draws the Eagle corridor, so that assertion had to be
+    relaxed rather than deleted quietly. What replaces it is narrower and still meaningful:
+    drawing may go through the LineObject API and NOTHING else, the GUI path stays banned,
+    and every write call stays banned.
+    """
+
+    DRAW_API = ('sr.LineObject.reset', 'sr.LineObject.add_line', 'sr.LineObject.dispatch',
+                'sr.World.create_line_object', 'sr.World.destroy_line_object')
 
     def setUp(self):
         self.source = SOURCE_PATH.read_text(encoding='utf-8')
@@ -240,10 +250,19 @@ class ReadOnlyContractTest(unittest.TestCase):
         for forbidden in ('Unit.set_local_position', 'Unit.set_local_rotation',
                           'Unit.set_local_scale', 'Material.set_vector',
                           'Material.set_scalar', 'spawn_unit', 'destroy_unit',
-                          'LineObject.add_line', 'Gui.triangle', 'api.write',
+                          'Gui.triangle', 'Gui.rect', 'api.write',
                           'WriteProcessMemory'):
             self.assertNotIn(forbidden, self.source,
-                             '%s appears in a read-only probe' % forbidden)
+                             '%s appears in a no-write addon' % forbidden)
+
+    def test_the_only_drawing_api_is_the_line_api(self):
+        """Drawing is allowed now - but only through the API a running mod proved."""
+        for call in self.DRAW_API:
+            self.assertIn(call, self.source, '%s is the verified drawing path' % call)
+        # Every draw call site must be one of the allowed ones: no other draw namespace.
+        for forbidden in ('sr.Gui.', 'sr.Camera.draw', 'create_world_gui', 'sr.Material.'):
+            self.assertNotIn(forbidden, self.source,
+                             '%s is not part of the verified drawing path' % forbidden)
 
     def test_no_ffi_at_all(self):
         self.assertNotIn('ffi', self.source,
@@ -251,6 +270,76 @@ class ReadOnlyContractTest(unittest.TestCase):
 
     def test_declares_read_only(self):
         self.assertIn('READ-ONLY', self.source)
+
+    def test_drawing_has_an_escape_hatch(self):
+        """The game has already been taken down twice; there is a switch with no rebuild.
+
+        It is a FILE the player controls, checked at load and cheaply during the run, so
+        turning the corridor off never depends on me shipping another version.
+        """
+        self.assertIn('EagleCorridor.off', self.source)
+        self.assertIn('KILL_SWITCH', self.source)
+        self.assertIn('drawing_allowed', self.source)
+
+    def test_drawing_switches_itself_off_but_sampling_continues(self):
+        """A slow or failing draw costs the corridor, not the measurement."""
+        self.assertIn('DRAW_BUDGET_MS', self.source)
+        self.assertIn('DRAW_SLOW_BEFORE_OFF', self.source)
+        self.assertIn('corridor DISABLED: drawing was too slow', self.source)
+        self.assertIn('corridor drawing ERRORED', self.source)
+
+    def test_the_corridor_is_submitted_every_frame(self):
+        """A dispatched line object is per-frame, so it cannot be submitted at 5 Hz.
+
+        The geometry is recomputed at the sample rate; the submission is per frame. Both
+        must happen inside the temp guard.
+        """
+        guard = self.source.split('local function guarded()', 1)[1].split('\nlocal ', 1)[0]
+        self.assertIn('draw_corridor', guard,
+                      'the draw must run in the per-frame path, not the sampled one')
+        self.assertLess(guard.index('draw_corridor'), guard.index('temp_guard_end'),
+                        'the draw must be inside the temp-byte-count guard')
+
+    def test_the_per_frame_work_is_capped_by_construction(self):
+        """The cost guarantee is deterministic, because it cannot be measured here.
+
+        os.clock() has roughly 15.6 ms granularity on this engine - every engine query in
+        this probe measures 0.0 ms against it - so the cap is a segment ceiling, not a
+        timing promise.
+        """
+        self.assertIn('TRAIL_MAX', self.source)
+        self.assertIn('if #trail > TRAIL_MAX then table.remove(trail, 1) end', self.source)
+
+    def test_the_line_object_is_released(self):
+        self.assertIn('release_line()', self.source)
+        self.assertIn('sr.World.destroy_line_object', self.source)
+
+    def test_the_drawing_self_test_is_opt_in_and_reports(self):
+        """The riskiest new thing is the drawing path, and it must be provable without a mission.
+
+        Waiting for an Eagle to test the line API would make a mission a dependency of a
+        code check - so a file turns the test on and the log carries the verdict.
+        """
+        self.assertIn('EagleCorridor.selftest', self.source)
+        self.assertIn('SELFTEST OK', self.source)
+        self.assertIn('SELFTEST FAILED', self.source)
+        self.assertIn('selftest_frames', self.source)
+
+    def test_drawing_capability_is_proven_by_construction_not_by_type(self):
+        """The first 0.7.0 run switched the corridor off because of a type test.
+
+        sr.Vector3 is a callable table on this build and sr.Color is a function, so
+        `type(...) == 'function'` rejected a working API. Capability must be established by
+        actually constructing one, inside the temp guard, because constructing allocates in
+        the script temp arena.
+        """
+        self.assertIn('pcall(sr.Vector3, 0, 0, 0)', self.source)
+        self.assertIn('pcall(sr.Color, 255, 255, 255, 255)', self.source)
+        self.assertIn('cap_saved', self.source)
+        # The code form of the old check, not the mention of it in the comment that
+        # explains the bug - a blunt substring test would fail on its own explanation.
+        self.assertNotIn("and type(sr.Vector3) == 'function'", self.source)
+        self.assertNotIn("and type(sr.Color) == 'function'", self.source)
 
 
 class CostContractTest(unittest.TestCase):

@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '0.6.2',
+    version = '0.7.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -43,6 +43,21 @@ local M = {
     slow_ticks = 0,
     slowest_tick_ms = 0,
     key_costs = {},         -- measured cost of each engine query, for the report
+    -- corridor drawing (see the drawing section further down)
+    trail = {},             -- the aircraft's actual ground track, newest last
+    trail_heading = nil,    -- cached unit heading, recomputed at the sample rate
+    line = nil,
+    line_world = nil,
+    draw_frames = 0,
+    draw_slow = 0,
+    draw_off = false,
+    draw_last_ms = 0,
+    draw_peak_ms = 0,
+    draw_checked = 0,
+    draw_enabled = true,
+    selftest = false,
+    selftest_origin = nil,
+    selftest_frames = 0,
 }
 rawset(_G, MOD_KEY, M)
 
@@ -141,6 +156,26 @@ local STATUS_S = 30
 -- first captured mission, drift stayed well under 8 m/s while throws clearly exceeded it.
 local THROW_SPEED_MPS = 8
 
+-- ---------------------------------------------------------------- the corridor --
+-- What is drawn: the aircraft's ACTUAL ground track, plus a forward extension along its
+-- current heading and an arrowhead at the far end. Deliberately the actual path and not
+-- the nominal rule, because the point is to see where the pass is really going - obstacle
+-- avoidance and all - rather than to predict it.
+--
+-- Why only an axis and an arrow, with no width: the width differs per stratagem, and the
+-- measured evidence says we cannot yet tell which stratagem a call is (all 11 munition
+-- identity keys return zero units). A width would therefore be a guess, and a wrong width
+-- on a 500kg - which is a point strike, not a line - would actively mislead. An axis is
+-- true for every stratagem, so it is what this ships.
+local TRAIL_MAX = 64            -- samples of ground track kept (about 13 s at 5 Hz)
+local FORWARD_M = 900           -- how far ahead to extend along the current heading
+local ARROW_M = 90              -- arrowhead arm length
+local DRAW_BUDGET_MS = 8        -- one frame's drawing should fit in this
+local DRAW_SLOW_BEFORE_OFF = 8  -- consecutive breaches before drawing switches itself off
+local KILL_SWITCH = nil         -- set in the paths section; a file that disables drawing
+local COLOR_TRAIL = { 255, 190, 40, 110 }
+local COLOR_HEAD = { 255, 70, 40, 230 }
+
 -- Only sample inside a mission. 0.2.0 sampled whenever a beacon-like object existed,
 -- and a stationary one exists on the ship: selecting a stratagem in the loadout
 -- started a 29-second sampling run in a menu, with no mission in progress.
@@ -165,6 +200,17 @@ local LOG_PATH = HOME .. '/Logs/EagleDirectionProbe.log'
 -- name per session also keeps call ids from colliding across sessions.
 local JSONL_PATH = HOME .. '/Logs/EagleDirectionProbe-'
     .. tostring(os.time()) .. '.jsonl'
+
+-- Creating this file turns the corridor off without a rebuild. The probe has already taken
+-- the game down twice, so there is a switch that needs no code change and no deploy: an
+-- escape hatch the player controls, not one that depends on me shipping a new version.
+KILL_SWITCH = HOME .. '/EagleCorridor.off'
+
+-- Creating this file runs a one-off drawing self-test and then clears itself: a short line
+-- is drawn beside the ship for a few seconds and the outcome is logged. It exists so the
+-- line API can be proven on this build WITHOUT a mission - the riskiest new thing in 0.7.0
+-- is the drawing path, and needing an Eagle to test it would be the wrong dependency.
+SELFTEST_FILE = HOME .. '/EagleCorridor.selftest'
 
 local log_file
 local function log(line)
@@ -233,15 +279,23 @@ local function report_capabilities()
     local names = { 'Application', 'World', 'Unit', 'Vector3', 'Matrix4x4',
                     'IdString64', 'IdString32', 'GameSession', 'Network',
                     'Color', 'Camera', 'LineObject', 'Gui', 'Script', 'Window' }
+    -- Most of these are tables, but Color is a constructor FUNCTION on this build. The
+    -- earlier check demanded a table for every name, so it reported Color as missing on
+    -- every session - a false negative that hid the one call the corridor needs.
+    local function present(name)
+        local kind = type(sr[name])
+        if name == 'Color' then return kind == 'function' end
+        return kind == 'table'
+    end
     local caps, missing = {}, {}
     for _, name in ipairs(names) do
         caps[name] = type(sr[name])
-        if type(sr[name]) ~= 'table' then missing[#missing + 1] = name end
+        if not present(name) then missing[#missing + 1] = name end
     end
     local need = { 'Application', 'World', 'Unit', 'Vector3' }
     local ok = true
     for _, name in ipairs(need) do
-        if type(sr[name]) ~= 'table' then ok = false end
+        if not present(name) then ok = false end
     end
     log('stingray capabilities: ' .. table.concat(
         (function()
@@ -522,6 +576,63 @@ local function identify_call(world, call, now)
 end
 
 -- ----------------------------------------------------------------------- tick --
+
+-- The aircraft's own forward vector, normalised. Preferred over differencing two track
+-- points because it is instantaneous: in the captured mission the endpoint chord was off
+-- by 150-160 degrees on two calls where the aircraft turned inside the window, while the
+-- forward vector stayed correct.
+local function aircraft_forward(unit)
+    if type(sr.Unit.world_pose) ~= 'function' or type(sr.Matrix4x4) ~= 'table'
+        or sr.Matrix4x4.forward == nil then
+        return nil
+    end
+    local okp, pose = pcall(sr.Unit.world_pose, unit, 1)
+    if not okp or pose == nil then return nil end
+    local okf, fwd = pcall(sr.Matrix4x4.forward, pose)
+    if not okf then return nil end
+    local f = vector_xyz(fwd)
+    if f == nil then return nil end
+    local len = math.sqrt(f[1] * f[1] + f[2] * f[2] + f[3] * f[3])
+    if len == 0 then return nil end
+    return { f[1] / len, f[2] / len, f[3] / len }
+end
+
+-- Append the aircraft's actual position to the corridor's ground track. Called at the
+-- sample rate; the draw only re-submits what is cached here.
+local function update_trail(eagle_entries)
+    if #eagle_entries == 0 then
+        -- Aircraft gone: drop the track so the corridor disappears with it and the next
+        -- pass starts clean instead of inheriting a stale heading.
+        if #M.trail > 0 then
+            M.trail, M.trail_heading = {}, nil
+        end
+        return
+    end
+    local entry = eagle_entries[1]
+    local p = world_position(entry.unit)
+    if p == nil then return end
+    local trail = M.trail
+    local last = trail[#trail]
+    if last == nil then
+        trail[1] = { p[1], p[2], p[3] }
+    else
+        local dx, dy, dz = p[1] - last[1], p[2] - last[2], p[3] - last[3]
+        -- 0.5 m: below the aircraft's real motion at any speed it flies, above jitter.
+        if dx * dx + dy * dy + dz * dz > 0.25 then
+            trail[#trail + 1] = { p[1], p[2], p[3] }
+            if #trail > TRAIL_MAX then table.remove(trail, 1) end
+        end
+    end
+    local head = aircraft_forward(entry.unit)
+    if head == nil and #trail >= 2 then
+        local a, b = trail[#trail - 1], trail[#trail]
+        local dx, dy, dz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+        local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if len > 0 then head = { dx / len, dy / len, dz / len } end
+    end
+    if head then M.trail_heading = head end
+end
+
 local function sample_body()
     if M.stopped then return end
     local now = os.clock()
@@ -659,6 +770,20 @@ local function sample_body()
         if active_call then active_call.primary_unit = thrown end
     end
 
+
+    -- The corridor: feed the actual track, whether or not a call is active. The Eagle is
+    -- visible before the beacon lands (measured: 0.0-3.5 s after the call, landing comes
+    -- 3.7-8.9 s in), so waiting for a call to be "live" would waste the earliest warning.
+    -- Where to draw the self-test line: beside the beacon-identity prop on the ship, which
+    -- sits where the player is - so the line is actually visible instead of 100 m away in
+    -- empty space.
+    if M.selftest and M.selftest_origin == nil and #beacon_entries > 0 then
+        local o = world_position(beacon_entries[1].unit)
+        if o then M.selftest_origin = { o[1], o[2], o[3] } end
+    end
+
+    update_trail(eagle_entries)
+
     if active_call == nil then
         -- Idle: still record eagle sightings, because the Eagle orbits between calls
         -- and its pre-call heading is exactly what a prediction mod would need.
@@ -710,6 +835,156 @@ local function sample_body()
     end
 end
 
+-- ------------------------------------------------------------------- drawing --
+-- The call pattern below is copied from a mod that already draws in this game, not
+-- invented: create_line_object(world, false), then per frame reset -> add_line xN ->
+-- dispatch, hiding with a zero-alpha line and destroying with destroy_line_object. That
+-- matters - guessing an engine signature is what took the game down once already.
+local function drawing_allowed(now)
+    if M.draw_off or not M.draw_enabled then return false end
+    -- Cheap file probe, at most every 2 s, so the escape hatch costs nothing per frame.
+    if now >= (M.draw_checked or 0) then
+        M.draw_checked = now + 2
+        local ok, fh = pcall(io.open, KILL_SWITCH, 'r')
+        if ok and fh then
+            pcall(fh.close, fh)
+            M.draw_enabled = false
+            log('corridor DISABLED: ' .. KILL_SWITCH .. ' exists. Delete it and restart '
+                .. 'the game to re-enable.')
+            emit({ kind = 'draw_disabled', t = now, note = 'kill switch file present' })
+            return false
+        end
+    end
+    return true
+end
+
+local function release_line()
+    if M.line and M.line_world then
+        pcall(sr.World.destroy_line_object, M.line_world, M.line)
+    end
+    M.line, M.line_world = nil, nil
+end
+
+local function ensure_line(world)
+    if M.line and M.line_world == world then return M.line end
+    release_line()
+    local ok, line = pcall(sr.World.create_line_object, world, false)
+    if not ok or line == nil then return nil end
+    M.line, M.line_world = line, world
+    return line
+end
+
+-- Called every frame. The geometry is cached; this only re-submits it, because a
+-- dispatched line object is a per-frame submission and would otherwise vanish between
+-- samples.
+local function draw_corridor()
+    if M.draw_off or not M.draw_enabled then return end
+    local trail = M.trail
+
+    -- Drawing self-test: a fixed line beside the ship, so the line API is proven on this
+    -- build while the player is still on the ship. It clears itself afterwards; the file
+    -- is the opt-in, and the log line is the result.
+    if M.selftest and #trail == 0 and M.selftest_origin then
+        local world = main_world()
+        if world == nil then return end
+        local line = ensure_line(world)
+        if line == nil then
+            M.selftest = false
+            log('SELFTEST FAILED: create_line_object returned nothing')
+            return
+        end
+        local o = M.selftest_origin
+        local ok = pcall(function()
+            sr.LineObject.reset(line)
+            local mid = { o[1] + 60, o[2], o[3] + 1.5 }
+            sr.LineObject.add_line(line, sr.Color(0, 255, 128, 220),
+                sr.Vector3(o[1], o[2], o[3] + 1.5), sr.Vector3(mid[1], mid[2], mid[3]))
+            sr.LineObject.add_line(line, sr.Color(0, 255, 128, 220),
+                sr.Vector3(mid[1], mid[2], mid[3]),
+                sr.Vector3(o[1] + 120, o[2], o[3] + 1.5))
+            sr.LineObject.dispatch(world, line)
+        end)
+        M.selftest_frames = M.selftest_frames + 1
+        if not ok then
+            M.selftest = false
+            M.draw_off = true
+            log('SELFTEST FAILED: the line API raised. Corridor disabled; sampling '
+                .. 'continues.')
+            release_line()
+            emit({ kind = 'selftest', t = os.clock(), note = 'failed' })
+        elseif M.selftest_frames >= 240 then
+            M.selftest = false
+            log(string.format('SELFTEST OK: drew a 120 m line for %d frames beside the '
+                .. 'ship, then released it. The line API works on this build.',
+                M.selftest_frames))
+            emit({ kind = 'selftest', t = os.clock(), note = 'ok' })
+            release_line()
+        end
+        return
+    end
+
+    if #trail == 0 then
+        -- Nothing to show: hide any line left over from the previous pass rather than
+        -- leaving a stale corridor on screen after the aircraft is gone.
+        if M.line and M.line_world then
+            pcall(function()
+                sr.LineObject.reset(M.line)
+                local z = sr.Vector3(0, 0, 0)
+                sr.LineObject.add_line(M.line, sr.Color(0, 0, 0, 0), z, z)
+                sr.LineObject.dispatch(M.line_world, M.line)
+            end)
+        end
+        return
+    end
+    local world = main_world()
+    if world == nil then return end
+    local line = ensure_line(world)
+    if line == nil then return end
+    local ok = pcall(function()
+        sr.LineObject.reset(line)
+        local trail = M.trail
+        local n = #trail
+        for i = 1, n - 1 do
+            sr.LineObject.add_line(line, sr.Color(COLOR_TRAIL[1], COLOR_TRAIL[2],
+                COLOR_TRAIL[3], COLOR_TRAIL[4]),
+                sr.Vector3(trail[i][1], trail[i][2], trail[i][3]),
+                sr.Vector3(trail[i + 1][1], trail[i + 1][2], trail[i + 1][3]))
+        end
+        local head = M.trail_heading
+        if head and n >= 1 then
+            local p = trail[n]
+            local ahead = { p[1] + head[1] * FORWARD_M, p[2] + head[2] * FORWARD_M,
+                            p[3] + head[3] * FORWARD_M }
+            sr.LineObject.add_line(line, sr.Color(COLOR_HEAD[1], COLOR_HEAD[2],
+                COLOR_HEAD[3], COLOR_HEAD[4]), sr.Vector3(p[1], p[2], p[3]),
+                sr.Vector3(ahead[1], ahead[2], ahead[3]))
+            -- Arrowhead: two arms swept back from the far end, in the horizontal plane.
+            local bx, by = -head[1], -head[2]
+            local len = math.sqrt(bx * bx + by * by)
+            if len > 0 then
+                bx, by = bx / len, by / len
+                local px, py = -by, bx
+                local tip = ahead
+                for _, s in ipairs({ 1, -1 }) do
+                    sr.LineObject.add_line(line, sr.Color(COLOR_HEAD[1], COLOR_HEAD[2],
+                        COLOR_HEAD[3], COLOR_HEAD[4]),
+                        sr.Vector3(tip[1], tip[2], tip[3]),
+                        sr.Vector3(tip[1] + (bx + px * s) * ARROW_M,
+                                   tip[2] + (by + py * s) * ARROW_M,
+                                   tip[3]))
+                end
+            end
+        end
+        sr.LineObject.dispatch(world, line)
+    end)
+    if not ok then
+        M.errors = M.errors + 1
+        M.draw_off = true
+        log('corridor drawing ERRORED and switched itself off; sampling continues')
+    end
+    M.draw_frames = M.draw_frames + 1
+end
+
 -- Every tick runs inside the temp-byte-count guard and is timed. A tick that busts the
 -- budget slows the probe down; a run of them stops it. A probe that can degrade the
 -- game is not worth its data, and 0.2.0 had neither guard.
@@ -717,6 +992,23 @@ local function guarded()
     local began = os.clock()
     local saved = temp_guard_begin()
     local ok, reason = pcall(sample_body)
+
+    -- The corridor is re-submitted EVERY frame, inside the same temp guard. A dispatched
+    -- line object is a per-frame submission, so dispatching only at the sample rate would
+    -- make it flicker or vanish; the geometry it submits is cached and recomputed at the
+    -- sample rate, so the per-frame cost is just the submission.
+    --
+    -- The cost guarantee here is DETERMINISTIC, not measured: at most TRAIL_MAX-1 segments
+    -- plus three for the head and arrowhead, capped by construction. os.clock() on this
+    -- engine has roughly 15.6 ms granularity - every query in this probe measures 0.0 ms
+    -- against it - so a fine-grained draw budget could not be believed even if it were
+    -- computed. A non-zero reading therefore means something gross, and a run of those
+    -- switches drawing off on its own.
+    local draw_began = os.clock()
+    if ok and M.draw_enabled and not M.draw_off then pcall(draw_corridor) end
+    local draw_spent = (os.clock() - draw_began) * 1000
+    M.draw_last_ms = draw_spent
+    if draw_spent > (M.draw_peak_ms or 0) then M.draw_peak_ms = draw_spent end
     temp_guard_end(saved)
     local spent = (os.clock() - began) * 1000
     M.last_tick_ms = spent
@@ -728,6 +1020,23 @@ local function guarded()
         M.last_error = tostring(reason)
         M.status = 'probe_error'
         return
+    end
+
+    -- A draw that registers at all on a ~15.6 ms clock is gross, so a short run of them is
+    -- enough to stop drawing. Sampling deliberately continues: losing the corridor is
+    -- survivable, losing the measurement is not.
+    if draw_spent > DRAW_BUDGET_MS and not M.draw_off then
+        M.draw_slow = (M.draw_slow or 0) + 1
+        log(string.format('slow draw: %.1f ms on the ~15.6 ms clock (slow #%d of %d)',
+            draw_spent, M.draw_slow, DRAW_SLOW_BEFORE_OFF))
+        if M.draw_slow >= DRAW_SLOW_BEFORE_OFF then
+            M.draw_off = true
+            release_line()
+            log('corridor DISABLED: drawing was too slow. Sampling continues.')
+            emit({ kind = 'draw_disabled', t = os.clock(), note = 'slow draw' })
+        end
+    else
+        M.draw_slow = 0
     end
 
     if spent > TICK_BUDGET_MS and not M.stopped then
@@ -755,7 +1064,7 @@ local function install()
         -- the name now changes every session.
         log('samples file: ' .. JSONL_PATH)
     end
-    log(string.format('v%s installed (read-only probe; no writes to game memory)',
+    log(string.format('v%s installed (no writes to game memory; draws the Eagle corridor)',
         M.version))
     local capable = report_capabilities()
     if not capable then
@@ -764,6 +1073,65 @@ local function install()
     end
 
     resolve_query_keys()
+
+    -- Drawing needs the line API. If this build does not expose it, sampling still runs -
+    -- the corridor is the feature, the measurement is the reason the mod exists.
+    --
+    -- Capability is proven by CONSTRUCTING one of each, not by testing the type. The first
+    -- 0.7.0 run tested `type(sr.Vector3) == 'function'` and switched the corridor off: on
+    -- this build sr.Vector3 is a callable TABLE (and sr.Color is a function), so a type test
+    -- was a guess about the API dressed up as a check. The construction is wrapped in the
+    -- temp guard because building a vector allocates in the script temp arena.
+    local cap_saved = temp_guard_begin()
+    local ok_vec = pcall(sr.Vector3, 0, 0, 0)
+    local ok_col = pcall(sr.Color, 255, 255, 255, 255)
+    temp_guard_end(cap_saved)
+
+    local reasons = {}
+    local function insist(label, value)
+        if value then return true end
+        reasons[#reasons + 1] = label
+        return false
+    end
+    local can_draw = true
+    can_draw = insist('World.create_line_object',
+        type(sr.World.create_line_object) == 'function') and can_draw
+    can_draw = insist('World.destroy_line_object',
+        type(sr.World.destroy_line_object) == 'function') and can_draw
+    can_draw = insist('LineObject', type(sr.LineObject) == 'table') and can_draw
+    if type(sr.LineObject) == 'table' then
+        can_draw = insist('LineObject.reset', type(sr.LineObject.reset) == 'function') and can_draw
+        can_draw = insist('LineObject.add_line',
+            type(sr.LineObject.add_line) == 'function') and can_draw
+        can_draw = insist('LineObject.dispatch',
+            type(sr.LineObject.dispatch) == 'function') and can_draw
+    end
+    can_draw = insist('sr.Vector3 constructible', ok_vec) and can_draw
+    can_draw = insist('sr.Color constructible', ok_col) and can_draw
+
+    if not can_draw then
+        M.draw_enabled = false
+        log('corridor OFF: missing on this build -> ' .. table.concat(reasons, ', '))
+    else
+        -- One check at load, so the escape hatch is honoured before the first frame.
+        local okf, fh = pcall(io.open, KILL_SWITCH, 'r')
+        if okf and fh then
+            pcall(fh.close, fh)
+            M.draw_enabled = false
+            log('corridor OFF: ' .. KILL_SWITCH .. ' exists. Delete that file and restart '
+                .. 'the game to draw it again.')
+        end
+        local oks, sh = pcall(io.open, SELFTEST_FILE, 'r')
+        if oks and sh then
+            pcall(sh.close, sh)
+            M.selftest = true
+            log('SELFTEST requested: a 120 m line will be drawn beside the ship for ~4 s, '
+                .. 'then released. Delete ' .. SELFTEST_FILE .. ' to stop asking for it.')
+        end
+    end
+    log(string.format('corridor: %s (actual flight path + heading arrow, no width - '
+        .. 'a width would be a per-stratagem guess we cannot yet make). Kill switch: %s',
+        M.draw_enabled and 'ON' or 'OFF', KILL_SWITCH))
     log(string.format('v%s: %d Hz, in-session only, %d ms tick budget, self-disables '
         .. 'after %d slow ticks, %d s startup grace', M.version, SAMPLE_HZ,
         TICK_BUDGET_MS, SLOW_TICKS_BEFORE_STOP, STARTUP_GRACE_S))
@@ -790,6 +1158,10 @@ local function install()
                     .. 'slowest_tick=%.1fms slow_ticks=%d backoff=x%d', M.samples,
                     M.calls, M.errors, M.reads, M.slowest_tick_ms or 0, M.slow_ticks,
                     M.backoff or 1))
+                log(string.format('  corridor: frames=%d peak_draw=%.1fms draw_off=%s '
+                    .. 'enabled=%s', M.draw_frames, M.draw_peak_ms or 0,
+                    tostring(M.draw_off), tostring(M.draw_enabled)))
+                release_line()
                 for _, row in ipairs(M.key_costs) do
                     log(string.format('  query cost %-18s units=%d %.2f ms',
                         row.src, row.units, row.ms))
