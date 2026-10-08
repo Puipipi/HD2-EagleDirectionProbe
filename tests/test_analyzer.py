@@ -606,6 +606,37 @@ class CorridorFeedbackTest(unittest.TestCase):
         self.assertIn('TRAIL_HOLD_S', body,
                       'the hold must be applied where tracks are retired')
 
+    def test_the_corridor_is_submitted_every_frame(self):
+        """The assumption the game had to settle, and the answer was no.
+
+        0.8.0 onward submitted only when the geometry changed, to save per-frame work. The
+        player reported nothing visible with brief flashes - a pair of white lines appearing for
+        an instant and vanishing - which is exactly a line object that does not persist between
+        frames. The harness could not catch it: its fake LineObject has no persistence semantics
+        at all, so every offline run reported 300+ visible frames.
+
+        Per-frame submission is the default from here on. The geometry is still rebuilt only when
+        it changes, so what remains per frame is the submission itself.
+        """
+        default = re.search(r'every_frame = (\w+),', self.source)
+        self.assertIsNotNone(default)
+        self.assertEqual(default.group(1), 'true',
+                         'submitting only on change makes the corridor flash and vanish')
+        self.assertIn('EagleCorridor.cheap', self.source,
+                      'the cheap mode stays available as an escape hatch, but not as the default')
+
+    def test_the_drawing_flag_defaults_to_the_one_observed_to_render(self):
+        """0.7.0 used `false` and the player SAW the line; 0.8.0 onward used `true` and saw none.
+
+        Two observations, one conclusion: default to the flag with evidence behind it and keep
+        the other behind a file.
+        """
+        default = re.search(r'through_world = (\w+),', self.source)
+        self.assertIsNotNone(default)
+        self.assertEqual(default.group(1), 'false',
+                         'the flag that rendered in 0.7.0 must be the default')
+        self.assertIn('EagleCorridor.occluded', self.source)
+
     def test_terrain_helpers_are_defined_before_sample_body_uses_them(self):
         """The forward-declaration trap this repository already has a skill about.
 

@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.1.0',
+    version = '1.2.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -80,8 +80,8 @@ local M = {
     color_ground = nil,
     anchor = nil,
     impact = nil,           -- where the thrown beacon came to rest = the impact point
-    through_world = true,   -- create_line_object flag; OCCLUDED_FILE flips it back
-    every_frame = false,    -- submit once per frame instead of once per geometry change
+    through_world = false,  -- create_line_object flag; PROVEN to render as false (0.7.0)
+    every_frame = true,     -- submit every frame: the line does NOT persist between frames
     frame_last = nil,       -- high-resolution frame clock, for the honest timing report
     frame_peak_ms = 0,
     frame_slow = 0,
@@ -204,7 +204,7 @@ local THROW_SPEED_MPS = 8
 -- created with the flag a proven mod uses for geometry it wants seen through the world.
 -- Colour is white now: the player asked for it, and white is also the one colour that
 -- survives a channel-order mistake, since a permutation of 255,255,255 is still white.
-local TRAIL_MAX = 24            -- ground track points kept (about 5 s at 5 Hz)
+local TRAIL_MAX = 16            -- ground track points kept (about 3 s at 5 Hz)
 
 -- How long the track survives with no aircraft sighting. The measured rate of empty samples
 -- is around a quarter, at 5 Hz, so a fraction of a second is not enough and several seconds
@@ -242,7 +242,7 @@ local GROUND_TRUE_HALF_M = 6   -- honest half-width of an Eagle bomb line
 -- height - option A's behaviour - so this degrades to the old flat strip, not to nothing.
 local GROUND_SAMPLE_R = 400    -- samples within this radius contribute
 local GROUND_SAMPLE_CAP = 48
-local GROUND_SEG_M = 40        -- subdivision length used to follow the ground
+local GROUND_SEG_M = 70        -- subdivision length used to follow the ground
 local FORWARD_M = 900           -- how far ahead to extend along the current heading
 local ARROW_M = 90              -- arrowhead arm length
 local GROUND_HALF_M = 140       -- ground strip: half its length along the axis
@@ -258,7 +258,7 @@ local DRAW_BUDGET_MS = 8        -- one frame's drawing should fit in this
 local DRAW_SLOW_BEFORE_OFF = 8  -- consecutive breaches before drawing switches itself off
 local KILL_SWITCH = nil         -- set in the paths section; a file that disables drawing
 local OCCLUDED_FILE = nil       -- ...a file that puts the lines back behind geometry
-local EVERYFRAME_FILE = nil     -- ...a file that forces one submission per frame
+local CHEAP_FILE = nil          -- ...a file that reverts to submitting only on change
 
 -- COLOURS ARE ARGB, NOT RGBA. This is now evidence, not a guess.
 --
@@ -319,17 +319,16 @@ SELFTEST_FILE = HOME .. '/EagleCorridor.selftest'
 
 -- Two more files, because two things in 0.8.0 rest on evidence I could not settle offline:
 --
---   OCCLUDED_FILE   the create_line_object flag is copied from a mod that uses `true` for
---                   world geometry, and the player reported the `false` lines being hidden
---                   by buildings - so `true` is now the default. I have NOT proven what the
---                   flag means. If `true` renders wrongly, this file restores `false`
---                   without a rebuild.
---   EVERYFRAME_FILE the corridor now re-submits only when its geometry changes, which is
---                   where most of the per-frame cost went. `reset` only makes sense if a
---                   line object persists between frames, which is why this is safe to try -
---                   but if the line flickers, this file forces the old per-frame submission.
+--   OCCLUDED_FILE   switches the create_line_object flag from `false` to `true`. This is the
+--                   UNPROVEN direction: 0.7.0 used `false` and the player saw the line (occluded
+--                   by buildings); 0.8.0 onward used `true` and the player saw nothing. So
+--                   `false` is the default now and this file is only for A/B testing.
+--   CHEAP_FILE      reverts to submitting the corridor only when its geometry changes. That was
+--                   the 0.8.0 optimisation and the game has answered it: the line does NOT
+--                   persist between frames, so it flashed once and vanished. Kept only as an
+--                   escape hatch if per-frame submission turns out to cost too much.
 OCCLUDED_FILE = HOME .. '/EagleCorridor.occluded'
-EVERYFRAME_FILE = HOME .. '/EagleCorridor.everyframe'
+CHEAP_FILE = HOME .. '/EagleCorridor.cheap'
 
 local log_file
 local function log(line)
@@ -1439,26 +1438,26 @@ local function draw_corridor()
     if world == nil then return end
     if ensure_line(world) == nil then return end
 
+    -- Submit EVERY frame, not only when the geometry changes.
+    --
+    -- This is the assumption I flagged as the one thing I could not check offline, and the game
+    -- has now answered it. 0.8.0 onward submitted only on change, to save per-frame work, and the
+    -- player reports "nothing shows" with brief flashes - a pair of white lines appearing for an
+    -- instant on the ground and vanishing. That is exactly what a line object that does NOT
+    -- persist between frames looks like: it is visible for the frame right after a submission
+    -- and for no other. The fake LineObject in the harness has no persistence semantics, which
+    -- is why no offline run could see this.
     local key = geometry_key()
     if key ~= M.geom_key then
         local count = build_geometry()
         if count == 0 then
-            -- Nothing to show. Submitting an empty line object would be pointless work, and
-            -- the key must still be remembered or this would rebuild on every frame.
             hide_line()
             M.geom_key = key
             return
         end
-        -- Remembered on BOTH paths. Leaving it unset here meant every frame rebuilt the
-        -- geometry and re-submitted it - the exact per-frame work the caching exists to avoid.
         M.geom_key = key
         M.need_submit = true
     end
-
-    -- Submit when the geometry changed, and otherwise only if the player asked for the
-    -- per-frame behaviour. `reset` only exists because a line object keeps state between
-    -- frames, which is why submitting only on change should hold the picture - but that is
-    -- the one thing here I could not verify offline, so EVERYFRAME_FILE reverts it.
     if M.need_submit or M.every_frame then
         if submit_geometry() then M.need_submit = false end
     end
@@ -1684,28 +1683,32 @@ local function install()
             log('SELFTEST requested: a 120 m ribbon will be drawn beside the ship for ~4 s, '
                 .. 'then released. Delete ' .. SELFTEST_FILE .. ' to stop asking for it.')
         end
-        -- The two reversals for the things I could not settle offline.
+        -- The two overrides for the things that had to be settled in game.
         local oko, oh = pcall(io.open, OCCLUDED_FILE, 'r')
         if oko and oh then
             pcall(oh.close, oh)
-            M.through_world = false
+            M.through_world = true
+            log('through-geometry flag ON (unproven; 0.8.0 used this and rendered nothing '
+                .. 'visible)')
         end
-        local oke, eh = pcall(io.open, EVERYFRAME_FILE, 'r')
-        if oke and eh then
-            pcall(eh.close, eh)
-            M.every_frame = true
+        local okc, ch = pcall(io.open, CHEAP_FILE, 'r')
+        if okc and ch then
+            pcall(ch.close, ch)
+            M.every_frame = false
+            log('cheap submit ON: only re-submitting on change. If the corridor flashes and '
+                .. 'vanishes, this is why - delete ' .. CHEAP_FILE)
         end
     end
     local app = sr.Application
     local has_clock = type(app) == 'table'
         and type(rawget(app, 'time_since_launch')) == 'function'
-    log(string.format('corridor: %s | ground impact line: yes | white, %d air / %d ground '
+    log(string.format('corridor: %s | ground strip: yes | white, %d air strands / %d ground '
         .. 'lanes | through geometry: %s | submit: %s | clock: %s',
         M.draw_enabled and 'ON' or 'OFF', AIR_STRANDS, GROUND_LANES,
-        tostring(M.through_world), M.every_frame and 'every frame' or 'on geometry change',
+        tostring(M.through_world), M.every_frame and 'EVERY frame' or 'on geometry change',
         has_clock and 'Application.time_since_launch (measured)' or 'os.clock (coarse)'))
-    log(string.format('files: off=%s occluded=%s everyframe=%s selftest=%s',
-        KILL_SWITCH, OCCLUDED_FILE, EVERYFRAME_FILE, SELFTEST_FILE))
+    log(string.format('files: off=%s occluded=%s cheap=%s selftest=%s',
+        KILL_SWITCH, OCCLUDED_FILE, CHEAP_FILE, SELFTEST_FILE))
     log(string.format('v%s: %d Hz, in-session only, %d ms tick budget, self-disables '
         .. 'after %d slow ticks, %d s startup grace', M.version, SAMPLE_HZ,
         TICK_BUDGET_MS, SLOW_TICKS_BEFORE_STOP, STARTUP_GRACE_S))
