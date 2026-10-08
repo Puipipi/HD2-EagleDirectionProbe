@@ -318,15 +318,23 @@ class ReadOnlyContractTest(unittest.TestCase):
         self.assertIn('sr.World.destroy_line_object', self.source)
 
     def test_the_drawing_self_test_is_opt_in_and_reports(self):
-        """The riskiest new thing is the drawing path, and it must be provable without a mission.
+        """The riskiest thing is the drawing path, and it must be provable without a mission.
 
-        Waiting for an Eagle to test the line API would make a mission a dependency of a
-        code check - so a file turns the test on and the log carries the verdict.
+        It now draws CONTINUOUSLY while the file exists, rather than for four seconds and then
+        stopping. Four seconds is not enough to catch with a screenshot, and the point of this
+        mode is to be looked at - by the player, or by me with a screenshotter - so it stays up
+        until the file is removed.
         """
         self.assertIn('EagleCorridor.selftest', self.source)
-        self.assertIn('SELFTEST OK', self.source)
+        self.assertIn('SELFTEST: drawing', self.source)
         self.assertIn('SELFTEST FAILED', self.source)
         self.assertIn('selftest_frames', self.source)
+        # The self-test must exercise the corridor's own drawing path, not a parallel one:
+        # same strands, same colour, and a CLOSED triangle, since the open three-line arrowhead
+        # is what the player mistook for a star.
+        body = self.source.split('Drawing self-test:', 1)[1].split('local function', 1)[0]
+        self.assertIn("AIR_STRANDS, 'air'", body)
+        self.assertIn('closed triangle', body)
 
     def test_drawing_capability_is_proven_by_construction_not_by_type(self):
         """The first 0.7.0 run switched the corridor off because of a type test.

@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.4.0',
+    version = '1.5.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -1447,30 +1447,40 @@ local function draw_corridor()
         end
         local o = M.selftest_origin
         if M.selftest_seg == nil then
+            -- The SAME ribbon the corridor uses - air colour, AIR_STRANDS strands, same
+            -- add_ribbon path - so that seeing this line proves the corridor's rendering, not
+            -- some parallel test-only code path.
             local seg = {}
             add_ribbon(seg, o[1], o[2], o[3] + 1.5, o[1] + 60, o[2], o[3] + 1.5,
-                3, 'ground')
+                AIR_STRANDS, 'air')
             add_ribbon(seg, o[1] + 60, o[2], o[3] + 1.5, o[1] + 120, o[2], o[3] + 1.5,
-                3, 'ground')
+                AIR_STRANDS, 'air')
+            -- And a closed triangle at the far end, exactly the arrowhead shape, because the
+            -- open three-line version is what the player mistook for a star.
+            local tx, ty, tz = o[1] + 120, o[2], o[3] + 1.5
+            local bx, by, ax, ay = -1, 0, 0, 1
+            local tip1 = { tx + (bx + ax) * 20, ty + (by + ay) * 20, tz }
+            local tip2 = { tx + (bx - ax) * 20, ty + (by - ay) * 20, tz }
+            add_ribbon(seg, tx, ty, tz, tip1[1], tip1[2], tip1[3], AIR_STRANDS, 'air')
+            add_ribbon(seg, tx, ty, tz, tip2[1], tip2[2], tip2[3], AIR_STRANDS, 'air')
+            add_ribbon(seg, tip1[1], tip1[2], tip1[3], tip2[1], tip2[2], tip2[3],
+                AIR_STRANDS, 'air')
             M.selftest_seg = seg
         end
         M.seg = M.selftest_seg
         local ok = submit_geometry()
         M.selftest_frames = M.selftest_frames + 1
+        if M.selftest_frames == 1 then
+            log(string.format('SELFTEST: drawing a %d-segment ribbon + closed triangle beside '
+                .. 'the ship CONTINUOUSLY. Remove %s and restart to stop it.',
+                #M.selftest_seg, SELFTEST_FILE))
+        end
         if not ok then
             M.selftest = false
             log('SELFTEST FAILED: the line API raised. Corridor disabled; sampling '
                 .. 'continues.')
             release_line()
             emit({ kind = 'selftest', t = os.clock(), note = 'failed' })
-        elseif M.selftest_frames >= 240 then
-            M.selftest = false
-            M.selftest_seg = nil
-            log(string.format('SELFTEST OK: drew a 120 m ribbon for %d frames beside the '
-                .. 'ship, then released it. The line API works on this build.',
-                M.selftest_frames))
-            emit({ kind = 'selftest', t = os.clock(), note = 'ok' })
-            release_line()
         end
         return
     end
