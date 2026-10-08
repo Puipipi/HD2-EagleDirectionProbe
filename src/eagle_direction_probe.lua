@@ -350,11 +350,16 @@ end
 
 -- Lua's %q is NOT JSON: it escapes control characters as \ddd (decimal), which JSON
 -- rejects. That produced one unparsable record per session. Escape properly instead.
+--
+-- The character class is written with \0 rather than %z. %z was removed after Lua 5.1, so on
+-- anything newer this raised on every single emit - which the offline harness runs on, and which
+-- showed up there as a flat 51 errors per run. That is worse than it sounds: fifty-one invented
+-- errors are a place for a real one to hide, and the harness reads errors as a signal.
 local JSON_ESC = { ['"'] = '\\"', ['\\'] = '\\\\', ['\b'] = '\\b', ['\f'] = '\\f',
                    ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
 local function json_string(value)
     local text = tostring(value)
-    text = text:gsub('[%z\1-\31"\\]', function(c)
+    text = text:gsub('[\0-\31"\\]', function(c)
         return JSON_ESC[c] or string.format('\\u%04x', string.byte(c))
     end)
     return '"' .. text .. '"'
@@ -382,7 +387,15 @@ local function emit(record)
     if ok then
         pcall(jsonl.write, jsonl, line .. '\n')
     else
+        -- The reason is KEPT, not just counted. Counting alone meant the offline harness showed
+        -- a flat 51 errors per run with nothing anywhere to say what they were, which is a
+        -- hiding place for a real one.
         M.errors = M.errors + 1
+        M.emit_error = tostring(line)
+        if not M.emit_error_logged then
+            M.emit_error_logged = true
+            log('jsonl emit ERRORED: ' .. tostring(line))
+        end
     end
 end
 

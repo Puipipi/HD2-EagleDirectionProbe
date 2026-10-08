@@ -12,7 +12,7 @@ import tempfile
 from lupa import LuaRuntime
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-PROBE = ROOT / "mods" / "eagle-direction-probe" / "src" / "eagle_direction_probe.lua"
+PROBE = ROOT / "src" / "eagle_direction_probe.lua"
 HARNESS = pathlib.Path(__file__).resolve().parent / "harness_draw.lua"
 src = HARNESS.read_text(encoding="utf-8")
 

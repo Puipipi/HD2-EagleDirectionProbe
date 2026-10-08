@@ -23,6 +23,7 @@ MODES = [
 src = HARNESS.read_text(encoding="utf-8")
 for mode, why in MODES:
     tmp = tempfile.mkdtemp(prefix="eagle-harness-%s-" % mode)
+    os.makedirs(os.path.join(tmp, "CowboyBingus", "Helldivers2", "Logs"), exist_ok=True)
     os.environ["DSH_HARNESS_TMP"] = tmp
     os.environ["DSH_PROBE_PATH"] = str(PROBE)
     os.environ["DSH_HARNESS_MODE"] = mode

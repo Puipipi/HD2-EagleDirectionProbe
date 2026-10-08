@@ -89,7 +89,12 @@ report('flat again')
 
 
 def main():
-    os.environ["DSH_HARNESS_TMP"] = tempfile.mkdtemp(prefix="terrain-")
+    _tmp = tempfile.mkdtemp(prefix="terrain-")
+    # The probe writes its log and samples under LOCALAPPDATA/Logs. Without that directory
+    # open_jsonl fails and every sample counts as an error, which is 51 invented errors per run
+    # and a place for a real one to hide.
+    os.makedirs(os.path.join(_tmp, "CowboyBingus", "Helldivers2", "Logs"), exist_ok=True)
+    os.environ["DSH_HARNESS_TMP"] = _tmp
     os.environ["DSH_PROBE_PATH"] = str(PROBE)
     os.environ["DSH_HARNESS_MODE"] = "normal"
     src = HARNESS.read_text(encoding="utf-8")
