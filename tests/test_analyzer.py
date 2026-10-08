@@ -280,6 +280,9 @@ class ReadOnlyContractTest(unittest.TestCase):
         self.assertIn('EagleCorridor.off', self.source)
         self.assertIn('KILL_SWITCH', self.source)
         self.assertIn('drawing_allowed', self.source)
+        # ...and it must actually be CALLED, or the switch only works on restart.
+        self.assertIn('drawing_allowed(os.clock())', self.source,
+                      'the kill switch must be consulted during the run, not only at load')
 
     def test_drawing_switches_itself_off_but_sampling_continues(self):
         """A slow or failing draw costs the corridor, not the measurement."""

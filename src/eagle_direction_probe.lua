@@ -878,7 +878,11 @@ end
 -- dispatched line object is a per-frame submission and would otherwise vanish between
 -- samples.
 local function draw_corridor()
-    if M.draw_off or not M.draw_enabled then return end
+    -- drawing_allowed re-checks the kill-switch file at most every 2 s, so the escape hatch
+    -- works DURING a session and not only at load. It was written and then not called, which
+    -- would have left the switch effective only on restart - the opposite of what the README
+    -- promises and of what makes it an escape hatch.
+    if not drawing_allowed(os.clock()) then return end
     local trail = M.trail
 
     -- Drawing self-test: a fixed line beside the ship, so the line API is proven on this
