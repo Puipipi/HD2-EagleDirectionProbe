@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.3.0',
+    version = '1.4.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -1347,6 +1347,43 @@ local function geometry_key()
     return table.concat(parts, '|')
 end
 
+-- Where the geometry actually IS, in world coordinates, as opposed to where I believe it is.
+--
+-- The captured mission settled that the geometry was being built and submitted - 113 to 160
+-- segments, 219 to 261 successful submits - while the player saw essentially nothing. So the
+-- logic is not the problem and the remaining question is whether the lines are where I think.
+-- This answers it from a log alone: a bounding box, with the size of the box in metres. If the
+-- box is degenerate, the points are wrong; if it is 1.5 km wide at 900 m altitude, the points
+-- are right and the trouble is in the drawing path.
+local function log_geometry_box()
+    local seg = M.seg
+    if seg == nil or #seg == 0 then return end
+    local function xyz(v)
+        return sr.Vector3.x(v), sr.Vector3.y(v), sr.Vector3.z(v)
+    end
+    local lo1, lo2, lo3, hi1, hi2, hi3 = nil, nil, nil, nil, nil, nil
+    local ok = pcall(function()
+        for i = 1, #seg do
+            for k = 2, 3 do
+                local x, y, z = xyz(seg[i][k])
+                if x then
+                    lo1 = (lo1 == nil or x < lo1) and x or lo1
+                    hi1 = (hi1 == nil or x > hi1) and x or hi1
+                    lo2 = (lo2 == nil or y < lo2) and y or lo2
+                    hi2 = (hi2 == nil or y > hi2) and y or hi2
+                    lo3 = (lo3 == nil or z < lo3) and z or lo3
+                    hi3 = (hi3 == nil or z > hi3) and z or hi3
+                end
+            end
+        end
+    end)
+    if not ok or lo1 == nil then return end
+    log(string.format('geometry box: %d segments | x %.0f..%.0f (%.0f m) | y %.0f..%.0f '
+        .. '(%.0f m) | z %.0f..%.0f (%.0f m) | %d track(s) %d impact(s)',
+        #seg, lo1, hi1, hi1 - lo1, lo2, hi2, hi2 - lo2, lo3, hi3, hi3 - lo3,
+        #M.track_order, #M.impact_order))
+end
+
 local function submit_geometry()
     local world, line, seg = M.line_world, M.line, M.seg
     if world == nil or line == nil or seg == nil then return false end
@@ -1366,6 +1403,14 @@ local function submit_geometry()
     end
     M.submits = (M.submits or 0) + 1
     M.seg_count = #seg
+    -- The first submission and then roughly every ten seconds, so the log says where the
+    -- geometry was without the cost of measuring it every frame. A failure is recorded rather
+    -- than swallowed: this is diagnostic code, and one that silently does nothing is worse than
+    -- none at all.
+    if M.submits == 1 or M.submits % 400 == 0 then
+        local box_ok, box_err = pcall(log_geometry_box)
+        if not box_ok then M.box_error = tostring(box_err) end
+    end
     return true
 end
 

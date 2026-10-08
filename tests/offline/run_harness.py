@@ -34,6 +34,6 @@ for mode, why in MODES:
     L.execute(src)
     M = L.eval("HD2EagleDirectionProbe")
     if M is not None:
-        print("  draw_error=%s  trail_error=%s  errors=%s  draw_off=%s"
-              % (M["draw_error"], M["trail_error"], M["errors"], M["draw_off"]))
+        print("  draw_error=%s  trail_error=%s  errors=%s  box_error=%s"
+              % (M["draw_error"], M["trail_error"], M["errors"], M["box_error"]))
     print()
