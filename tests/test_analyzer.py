@@ -337,19 +337,43 @@ class CostContractTest(unittest.TestCase):
         self.assertRegex(self.source, r'STARTUP_GRACE_S\s*=\s*\d+')
 
     def test_a_stationary_beacon_does_not_count_as_a_call(self):
-        """The ship prop must not start a call.
+        """Neither presence nor drift may start a call - only a throw.
 
         0.2.0 inferred a call from the mere existence of a beacon-identity unit, and a
         stationary one sits on the ship - which is why it sampled in the loadout. The
-        gate is movement, and it must be keyed by the unit handle: the identity string
-        is the resource hash and is shared by every beacon.
+        first captured mission then showed that several beacon-identity objects coexist
+        and all log the same resource id, with the landed ones drifting tens of metres, so
+        a displacement threshold fires on them too. Speed is the discriminator, and the
+        object is tracked by its unit handle so the objects never mix.
         """
-        self.assertIn('BEACON_MOVE_M', self.source)
+        self.assertIn('THROW_SPEED_MPS', self.source)
         self.assertIn('beacon_motion[entry.unit]', self.source,
                       'the motion table must be keyed by the unit handle')
         body = self.sample_body()
-        self.assertIn('moved and active_call == nil', body,
-                      'a call must require movement, not mere presence')
+        self.assertIn('thrown ~= nil and active_call == nil', body,
+                      'a call must require a throw, not presence or drift')
+
+    def test_a_second_throw_splits_the_call(self):
+        """Two throws must not be merged into one call.
+
+        The timeout alone once swallowed a throw: five throws produced three calls when the
+        timeout outlasted the gap between them. A different beacon flying fast is the
+        signal that a new throw has begun.
+        """
+        body = self.sample_body()
+        self.assertIn('primary_unit', body)
+        self.assertIn('a different beacon was thrown', body,
+                      'the call must be closed early when a new beacon is thrown')
+
+    def test_the_thrown_beacon_is_marked_in_the_samples(self):
+        """The analyzer cannot separate the objects without this flag.
+
+        Several beacon-identity objects share one resource id, so the captured samples were
+        unusable for the player-to-beacon line until the thrown one was marked.
+        """
+        self.assertIn('"primary":true', self.source,
+                      'the thrown beacon must be marked in the samples')
+        self.assertIn('entry.primary', self.source)
 
     def test_there_is_a_status_line_in_every_state(self):
         """A silent log must never again be ambiguous.

@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '0.6.1',
+    version = '0.6.2',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -130,11 +130,16 @@ local STARTUP_GRACE_S = 20
 -- measure at 0.00 ms each; the 0.2.0 failure was never their cost.
 local STATUS_S = 30
 
--- A beacon-identity unit must move at least this far before it counts as a thrown
--- stratagem. The ship carries a stationary prop with the same resource id, and
--- treating its existence as a call is what made 0.2.0 sample in the loadout. The
--- observed prop moved 1.5 mm over 268 samples.
-local BEACON_MOVE_M = 0.75
+-- A beacon counts as a THROW only above this speed, in metres per second.
+--
+-- Presence is not evidence - the ship carries a stationary prop with the same resource id
+-- (it moved 1.5 mm over 268 samples), and treating its existence as a call is what made
+-- 0.2.0 sample in the loadout. Displacement alone is not enough either: several
+-- beacon-identity objects coexist in a mission, all logging the same resource id, and the
+-- landed ones drift by tens of metres over a session, so a displacement threshold fires on
+-- them. A thrown beacon flies at tens of m/s; the settled ones do not. Measured on the
+-- first captured mission, drift stayed well under 8 m/s while throws clearly exceeded it.
+local THROW_SPEED_MPS = 8
 
 -- Only sample inside a mission. 0.2.0 sampled whenever a beacon-like object existed,
 -- and a stationary one exists on the ship: selecting a stratagem in the loadout
@@ -178,21 +183,33 @@ local function open_jsonl()
     return jsonl ~= nil
 end
 
+-- Lua's %q is NOT JSON: it escapes control characters as \ddd (decimal), which JSON
+-- rejects. That produced one unparsable record per session. Escape properly instead.
+local JSON_ESC = { ['"'] = '\\"', ['\\'] = '\\\\', ['\b'] = '\\b', ['\f'] = '\\f',
+                   ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
+local function json_string(value)
+    local text = tostring(value)
+    text = text:gsub('[%z\1-\31"\\]', function(c)
+        return JSON_ESC[c] or string.format('\\u%04x', string.byte(c))
+    end)
+    return '"' .. text .. '"'
+end
+
 local function emit(record)
     if not jsonl or M.stopped then return end
     local ok, line = pcall(function()
         local parts = {}
         for _, key in ipairs({ 'kind', 't', 'call', 'note' }) do
-            if record[key] ~= nil then
-                parts[#parts + 1] = string.format('%q:%s', key,
-                    type(record[key]) == 'string' and string.format('%q', record[key])
-                    or tostring(record[key]))
+            local value = record[key]
+            if value ~= nil then
+                parts[#parts + 1] = json_string(key) .. ':' ..
+                    (type(value) == 'string' and json_string(value) or tostring(value))
             end
         end
         for _, key in ipairs({ 'beacons', 'eagles', 'caps', 'ids' }) do
             local value = record[key]
             if value ~= nil then
-                parts[#parts + 1] = string.format('%q:%s', key, value)
+                parts[#parts + 1] = json_string(key) .. ':' .. value
             end
         end
         return '{' .. table.concat(parts, ',') .. '}'
@@ -391,8 +408,9 @@ local function json_points(entries, want_pose)
         local unit = entry.unit
         local p = world_position(unit)
         if p then
-            local row = string.format('{"src":%q,"id":%q,"p":[%.4f,%.4f,%.4f]',
-                entry.src or '?', unit_identity(unit) or '?', p[1], p[2], p[3])
+            local row = string.format('{"src":%s,"id":%s,"p":[%.4f,%.4f,%.4f]',
+                json_string(entry.src or '?'), json_string(unit_identity(unit) or '?'),
+                p[1], p[2], p[3])
             if want_pose and type(sr.Unit.world_pose) == 'function'
                 and type(sr.Matrix4x4) == 'table' and sr.Matrix4x4.forward then
                 local okt, pose = pcall(sr.Unit.world_pose, unit, 1)
@@ -404,6 +422,11 @@ local function json_points(entries, want_pose)
                     end
                 end
             end
+            -- The one beacon that was actually thrown. Several beacon-identity objects
+            -- coexist, and they all log the same resource id, so without this flag the
+            -- analyzer cannot tell the thrown one from the landed ones - which is what
+            -- made the player-to-beacon line meaningless in the first captured mission.
+            if entry.primary then row = row .. ',"primary":true' end
             row = row .. (want_pose and ',"pose":true' or '') .. '}'
             out[#out + 1] = row
         end
@@ -574,29 +597,46 @@ local function sample_body()
         end
     end
 
-    -- A beacon counts only once it has MOVED. The ship carries a stationary prop with
-    -- the same resource id, and treating its mere existence as a call is what made
-    -- 0.2.0 sample while the player was in the loadout.
-    local moved = false
+    -- Which beacon was THROWN, by SPEED, and per object.
+    --
+    -- Presence is not evidence (the ship carries a stationary prop with the same resource
+    -- id). Displacement alone is not enough either: several beacon-identity objects
+    -- coexist in a mission and they all log the same resource id, so the analyzer cannot
+    -- separate them. A thrown beacon flies fast - tens of metres per second - while the
+    -- landed ones only drift, so speed identifies the thrown one, and the object is
+    -- tracked by its unit handle so the objects never get mixed up.
+    --
+    -- The same test splits calls: a fast beacon while a call is already active is a NEW
+    -- throw, not the old one still moving. That replaces the timeout as the primary
+    -- boundary, which matters because the timeout alone once swallowed a throw.
+    local thrown, fast_now = nil, nil
     for _, entry in ipairs(beacon_entries) do
         local p = world_position(entry.unit)
         local rec = p and beacon_motion[entry.unit]
         if p and rec == nil then
-            beacon_motion[entry.unit] = { p = p }
+            beacon_motion[entry.unit] = { p = p, t = now }
         elseif p then
+            local dt = now - (rec.t or now)
             local dx, dy, dz = p[1] - rec.p[1], p[2] - rec.p[2], p[3] - rec.p[3]
-            if math.sqrt(dx * dx + dy * dy + dz * dz) > BEACON_MOVE_M then
-                rec.moved = true
+            local speed = dt > 0 and (math.sqrt(dx * dx + dy * dy + dz * dz) / dt) or 0
+            if speed > (rec.peak or 0) then rec.peak = speed end
+            if speed > THROW_SPEED_MPS then
+                rec.thrown = true
+                rec.settled = nil
+                fast_now = entry.unit
+            elseif rec.thrown and not rec.settled and speed < THROW_SPEED_MPS / 4 then
+                rec.settled = now          -- it has come to rest after a throw
             end
-            rec.p = p
+            rec.p, rec.t = p, now
         end
-        if rec and rec.moved then moved = true end
+        if rec and rec.thrown and thrown == nil then thrown = entry.unit end
+        entry.primary = (rec ~= nil and rec.thrown == true) or false
     end
 
-    if #beacon_entries > 0 and not moved and now >= (M.next_static_report or 0) then
+    if #beacon_entries > 0 and thrown == nil and now >= (M.next_static_report or 0) then
         M.next_static_report = now + 120
-        log(string.format('a beacon-identity unit is present but has not moved %.2f m: '
-            .. 'ignoring it as the ship prop, not a thrown stratagem', BEACON_MOVE_M))
+        log(string.format('beacon-identity units present, none thrown (>%.0f m/s): '
+            .. 'ignoring them as props, not a stratagem', THROW_SPEED_MPS))
     end
 
     -- Never let the motion table grow without bound if units churn.
@@ -604,8 +644,19 @@ local function sample_body()
     for _ in pairs(beacon_motion) do motion_n = motion_n + 1 end
     if motion_n > 64 then beacon_motion = {} end
 
-    if moved and active_call == nil then
+    -- A fresh high-speed beacon while a call is active means a NEW throw: close the
+    -- current call so the two throws are not merged into one record.
+    if fast_now and active_call ~= nil and active_call.primary_unit ~= nil
+        and fast_now ~= active_call.primary_unit then
+        log(string.format('call %d closed early: a different beacon was thrown',
+            active_call.id))
+        emit({ kind = 'call_end', t = now, call = active_call.id, note = 'new throw' })
+        active_call = nil
+    end
+
+    if thrown ~= nil and active_call == nil then
         begin_call(now, beacon_entries)
+        if active_call then active_call.primary_unit = thrown end
     end
 
     if active_call == nil then
