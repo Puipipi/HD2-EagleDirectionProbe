@@ -531,18 +531,40 @@ class CorridorFeedbackTest(unittest.TestCase):
             '\nlocal function', 1)[0]
 
     def test_frame_rate_geometry_is_not_built_every_frame(self):
-        """Complaint 1: the frame rate dropped.
+        """Complaint 1 was the frame rate; the fix for it caused the invisible corridor.
 
-        The cause was constructing Vector3 objects per frame - 64 segments x 2 endpoints x 60
-        frames is about 7,700 temporaries a second in the script temp arena. Geometry is now
-        built once per change and the per-frame path only re-submits what is cached.
+        The old rule was "construct no Vector3 in the per-frame path". It is now the opposite, and
+        this test records why. Caching engine Vector3 objects across frames put them in the script
+        temp arena, which this mod RESTORES at the end of every frame (the discipline that stopped
+        the 0.2.0 crash). Restoring recycles them, so the cached geometry submitted garbage: the
+        game logged a valid box in the frame it was built and x 0..inf in every frame after.
+
+        The rule now is: the cache holds PLAIN LUA NUMBERS, and the engine objects are constructed
+        in the frame that dispatches them.
         """
-        body = self.submit_body()
-        self.assertNotIn('sr.Vector3', body,
-                         'no vector may be constructed in the per-frame submit path')
-        self.assertIn('local function build_geometry()', self.source)
+        # The cache builders must not touch engine objects at all.
+        for fn in ('local function add_ribbon(', 'local function build_geometry('):
+            body = self.source.split(fn, 1)[1].split('\nlocal function', 1)[0]
+            self.assertNotIn('sr.Vector3', body,
+                             '%s must cache plain numbers, not engine vectors' % fn)
+        # ...and the submit path must be the place they are built.
+        submit = self.submit_body()
+        self.assertIn('sr.Vector3(s[2][1]', submit,
+                      'the engine vectors must be built in the frame that dispatches them')
         self.assertIn('geom_key', self.source)
-        self.assertIn('M.need_submit', self.source)
+
+    def test_engine_objects_are_never_cached_across_frames(self):
+        """The bug the geometry box exposed, pinned so it cannot come back.
+
+        Any engine value held in M and read on a later frame is suspect: vectors and colours both
+        allocate in the temp arena this mod restores every frame. The colours are rebuilt per
+        submission for the same reason.
+        """
+        self.assertIn('local colors = { air = colour(', self.source)
+        colour_body = self.source.split('local function colour(kind)', 1)[1].split(
+            '\nend', 1)[0]
+        self.assertNotIn('M.color_', colour_body,
+                         'colours must not be memoised in M: they are arena allocations')
 
     def test_there_is_a_ground_impact_strip(self):
         """Complaint 2: the aircraft line alone does not show where the ordnance lands.
@@ -573,7 +595,9 @@ class CorridorFeedbackTest(unittest.TestCase):
         body = self.source.split('local function build_geometry()', 1)[1].split(
             '\nlocal function', 1)[0]
         # The strips are built after the per-aircraft loop, from the impact table alone.
-        impacts_at = body.index('for _, imp in pairs(M.impacts) do')
+        # The marker is the strip CALL, not the impacts table: build_geometry now also walks
+        # M.impacts at the top to choose the width anchor.
+        impacts_at = body.index('add_strip(imp.p, imp.heading)')
         track_loop = body.index('for _, track in pairs(M.tracks) do')
         self.assertGreater(impacts_at, track_loop,
                            'the strips must be built outside the per-aircraft loop')

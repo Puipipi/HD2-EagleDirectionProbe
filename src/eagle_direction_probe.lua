@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.5.0',
+    version = '1.7.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -1182,18 +1182,13 @@ end
 -- Constructing them every frame was the per-frame cost that showed up as a frame rate drop:
 -- 64 segments x 2 endpoints x 60 frames is roughly 7,700 temporaries a second in the script
 -- temp arena. Nothing here runs per frame any more.
+-- Colours are rebuilt per submission, like the vectors. Caching them was the same mistake:
+-- sr.Color allocates in the temp arena too, and this mod restores that arena every frame.
 local function colour(kind)
     if kind == 'ground' then
-        if M.color_ground == nil then
-            M.color_ground = sr.Color(COLOR_GROUND[1], COLOR_GROUND[2], COLOR_GROUND[3],
-                COLOR_GROUND[4])
-        end
-        return M.color_ground
+        return sr.Color(COLOR_GROUND[1], COLOR_GROUND[2], COLOR_GROUND[3], COLOR_GROUND[4])
     end
-    if M.color_air == nil then
-        M.color_air = sr.Color(COLOR_AIR[1], COLOR_AIR[2], COLOR_AIR[3], COLOR_AIR[4])
-    end
-    return M.color_air
+    return sr.Color(COLOR_AIR[1], COLOR_AIR[2], COLOR_AIR[3], COLOR_AIR[4])
 end
 
 -- One ribbon: `strands` parallel copies of a segment, offset laterally.
@@ -1205,9 +1200,8 @@ end
 local function add_ribbon(seg, ax, ay, az, bx, by, bz, strands, kind)
     local dx, dy = bx - ax, by - ay
     local len = math.sqrt(dx * dx + dy * dy)
-    local c = colour(kind)
     if len <= 0 or strands <= 1 then
-        seg[#seg + 1] = { c, sr.Vector3(ax, ay, az), sr.Vector3(bx, by, bz) }
+        seg[#seg + 1] = { kind, { ax, ay, az }, { bx, by, bz } }
         return
     end
     local px, py = -dy / len, dx / len
@@ -1221,13 +1215,85 @@ local function add_ribbon(seg, ax, ay, az, bx, by, bz, strands, kind)
     local half = (strands - 1) / 2
     for i = -half, half do
         local o = i * step
-        seg[#seg + 1] = { c, sr.Vector3(ax + px * o, ay + py * o, az),
-                          sr.Vector3(bx + px * o, by + py * o, bz) }
+        seg[#seg + 1] = { kind, { ax + px * o, ay + py * o, az },
+                          { bx + px * o, by + py * o, bz } }
     end
+end
+
+
+-- The local player's unit, resolved with the calls HUD_Ballistic_Trajectory_Overlay uses: the
+-- third-person avatar by resource, alive(), and player_number from its animation state machine
+-- when more than one rig is present. No FFI, and no invented API.
+--
+-- This matters twice over. It is the honest stand-in for the camera position, which the width
+-- scaling needs; and on the ship it is the one point guaranteed to be in front of the player, so
+-- the drawing self-test can be anchored somewhere that "I cannot see it" actually means something.
+local AVATAR_TP = 'content/fac_helldivers/cha_avatar/avatar_helldiver'
+
+local function unit_player_number(unit)
+    local u = sr.Unit
+    if type(u.has_animation_state_machine) ~= 'function'
+        or type(u.animation_has_variable) ~= 'function'
+        or type(u.animation_find_variable) ~= 'function'
+        or type(u.animation_get_variable) ~= 'function' then
+        return nil
+    end
+    local ok1, has = pcall(u.has_animation_state_machine, unit)
+    if not ok1 or has ~= true then return nil end
+    local ok2, found = pcall(u.animation_has_variable, unit, 'player_number')
+    if not ok2 or found ~= true then return nil end
+    local ok3, id = pcall(u.animation_find_variable, unit, 'player_number')
+    if not ok3 or id == nil then return nil end
+    local ok4, value = pcall(u.animation_get_variable, unit, id)
+    if not ok4 then return nil end
+    return value
+end
+
+local function local_player(world)
+    if world == nil then return nil end
+    local ok, units = pcall(units_by_resource, world, AVATAR_TP)
+    if not ok or type(units) ~= 'table' then return nil end
+    local single = nil
+    for _, unit in ipairs(as_list(units)) do
+        local alive_ok, alive = pcall(sr.Unit.alive, unit)
+        if alive_ok and alive == true then
+            if single == nil then
+                single = unit
+            else
+                -- More than one rig: keep only the one whose player_number matches the first.
+                local want = unit_player_number(single)
+                if want ~= nil and unit_player_number(unit) == want then
+                    -- still ambiguous, so refuse rather than guess
+                    return nil
+                end
+            end
+        end
+    end
+    return single
+end
+
+local function player_position(world)
+    local unit = local_player(world)
+    if unit == nil then return nil end
+    return world_position(unit)
 end
 
 local function build_geometry()
     local seg = {}
+
+    -- The width anchor is rebuilt from scratch every time, never carried over.
+    --
+    -- It used to persist, so on the ship it was still whatever position an earlier mission had
+    -- left there. The strand offset scales with the distance to the anchor, and a stale anchor
+    -- kilometres away turned a 120 m ribbon into a 41 m wide fan - which the geometry box in the
+    -- log exposed (y spanning 41 m where sub-metre was expected).
+    M.anchor = nil
+    for _, imp in pairs(M.impacts) do M.anchor = M.anchor or imp.p end
+    for _, track in pairs(M.tracks) do
+        local tr = track.trail
+        if #tr > 0 then M.anchor = M.anchor or tr[#tr] end
+    end
+    if M.anchor == nil then M.anchor = M.anchor_player end
 
     -- The ground strip: a hatched band through the impact point, aligned with the heading of
     -- the aircraft judged most likely to be serving it.
@@ -1252,7 +1318,7 @@ local function build_geometry()
         local function at(t, o)
             local x = imp[1] + hx * t + px * o
             local y = imp[2] + hy * t + py * o
-            return sr.Vector3(x, y, terrain_height(x, y, imp[3]))
+            return { x, y, terrain_height(x, y, imp[3]) }
         end
 
         local steps = math.max(1, math.ceil((2 * GROUND_HALF_M) / GROUND_SEG_M))
@@ -1358,14 +1424,11 @@ end
 local function log_geometry_box()
     local seg = M.seg
     if seg == nil or #seg == 0 then return end
-    local function xyz(v)
-        return sr.Vector3.x(v), sr.Vector3.y(v), sr.Vector3.z(v)
-    end
     local lo1, lo2, lo3, hi1, hi2, hi3 = nil, nil, nil, nil, nil, nil
     local ok = pcall(function()
         for i = 1, #seg do
             for k = 2, 3 do
-                local x, y, z = xyz(seg[i][k])
+                local x, y, z = seg[i][k][1], seg[i][k][2], seg[i][k][3]
                 if x then
                     lo1 = (lo1 == nil or x < lo1) and x or lo1
                     hi1 = (hi1 == nil or x > hi1) and x or hi1
@@ -1387,11 +1450,16 @@ end
 local function submit_geometry()
     local world, line, seg = M.line_world, M.line, M.seg
     if world == nil or line == nil or seg == nil then return false end
+    -- The engine objects are built HERE, in the frame that dispatches them, and never cached:
+    -- they live in the script temp arena, which this mod restores at the end of every frame.
+    local colors = { air = colour('air'), ground = colour('ground') }
     local ok = pcall(function()
         sr.LineObject.reset(line)
         for i = 1, #seg do
             local s = seg[i]
-            sr.LineObject.add_line(line, s[1], s[2], s[3])
+            sr.LineObject.add_line(line, colors[s[1]],
+                sr.Vector3(s[2][1], s[2][2], s[2][3]),
+                sr.Vector3(s[3][1], s[3][2], s[3][3]))
         end
         sr.LineObject.dispatch(world, line)
     end)
@@ -1436,9 +1504,18 @@ local function draw_corridor()
     -- Drawing self-test: a fixed line beside the ship, so the line API is proven on this
     -- build while the player is still on the ship. It clears itself afterwards; the file
     -- is the opt-in, and the log line is the result.
-    if M.selftest and next(M.tracks) == nil and M.selftest_origin then
+    if M.selftest and next(M.tracks) == nil then
         local world = main_world()
         if world == nil then return end
+        -- Anchor where the player is standing, refreshed every rebuild: the whole point of the
+        -- ship test is to draw something the player cannot fail to be looking at.
+        local ppos = player_position(world)
+        if ppos ~= nil then
+            M.anchor_player = ppos
+            M.selftest_origin = { ppos[1], ppos[2], ppos[3] }
+            M.selftest_seg = nil
+        end
+        if M.selftest_origin == nil then return end
         local line = ensure_line(world)
         if line == nil then
             M.selftest = false
