@@ -9,7 +9,7 @@ import pathlib
 import re
 import tempfile
 
-from lupa import LuaRuntime
+from lupa.luajit21 import LuaRuntime
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PROBE = ROOT / "src" / "eagle_direction_probe.lua"
@@ -29,6 +29,7 @@ for name, text in variants.items():
     path = work / (re.sub(r"\W+", "_", name) + ".lua")
     path.write_text(text, encoding="utf-8")
     tmp = tempfile.mkdtemp(prefix="eagle-cf-")
+    os.makedirs(os.path.join(tmp, "CowboyBingus", "Helldivers2", "Logs"), exist_ok=True)
     os.environ["DSH_HARNESS_TMP"] = tmp
     os.environ["DSH_PROBE_PATH"] = str(path)
     os.environ["DSH_HARNESS_MODE"] = "flaky"

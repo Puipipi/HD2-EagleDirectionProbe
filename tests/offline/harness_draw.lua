@@ -84,7 +84,7 @@ sr.World = {
             -- flaky: one query in four finds nothing, which is what the captured mission
             -- showed - 45 of 50 samples in one call, 34 of 44 in another.
             if MODE == 'flaky' and (EAGLE_QUERIES % 4 == 0) then return {} end
-            -- twoair: a squadmate's Eagle, or the Eagle Storm buff that removes the cooldown.
+            -- twoair: two independently tracked Eagles, such as a squadmate's call.
             -- Both aircraft share one resource id, which is exactly why the probe has to key
             -- them by unit.
             if MODE == 'twoair' then return { AIRCRAFT, AIRCRAFT2 } end
@@ -126,12 +126,15 @@ sr.Matrix4x4 = {
 -- fake object simply accumulated calls and forgot.
 FRAME_DISPATCHED = false
 FRAME_HAS_LINES = false
+GROUND_LINES_SUBMITTED = 0
 sr.LineObject = {
     reset = function()
         ADDED[#ADDED + 1] = 'reset'
         FRAME_HAS_LINES = false          -- reset clears what the object would draw
     end,
     add_line = function(_, color, a, b)
+        assert(color ~= nil and a ~= nil and b ~= nil, 'invalid engine add_line argument')
+        if color.a == 235 then GROUND_LINES_SUBMITTED = GROUND_LINES_SUBMITTED + 1 end
         ADDED[#ADDED + 1] = { color, a, b }
         -- Alpha 0 is the probe's way of hiding a line, so it does not count as visible.
         if color ~= nil and color.a ~= nil and color.a > 0 then FRAME_HAS_LINES = true end
@@ -164,10 +167,14 @@ _G.update = function() end
 _G.shutdown = function() end
 
 -- ------------------------------------------------------------------ load the probe --
+for _,name in ipairs({'query','contract'}) do
+    local path=probe_path:gsub('eagle_direction_probe%.lua$','terrain_'..name..'.lua')
+    local module=loadfile(path)
+    if module then package.preload['mods/codex/eagle_terrain_'..name]=module end
+end
 local chunk, err = loadfile(probe_path)
 if chunk == nil then
-    print('LOAD FAILED: ' .. tostring(err))
-    return
+    error('LOAD FAILED: ' .. tostring(err))
 end
 chunk()
 local M = rawget(_G, 'HD2EagleDirectionProbe')

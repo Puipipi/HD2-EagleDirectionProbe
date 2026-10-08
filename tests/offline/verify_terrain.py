@@ -13,7 +13,7 @@ import os
 import pathlib
 import tempfile
 
-from lupa import LuaRuntime
+from lupa.luajit21 import LuaRuntime
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]      # mods/eagle-direction-probe
 PROBE = ROOT / "src" / "eagle_direction_probe.lua"
@@ -27,7 +27,7 @@ local function ground_stats()
         for i = 1, #M.seg do
             local s = M.seg[i]
             -- The ground colour is white at alpha 235; the air ribbon is white at alpha 170.
-            if s[1] ~= nil and s[1].a == 235 then
+            if s[1] == 'ground' then
                 n = n + 1
                 for k = 2, 3 do
                     local z = s[k][3]
@@ -97,7 +97,8 @@ def main():
     os.environ["DSH_HARNESS_TMP"] = _tmp
     os.environ["DSH_PROBE_PATH"] = str(PROBE)
     os.environ["DSH_HARNESS_MODE"] = "normal"
-    src = HARNESS.read_text(encoding="utf-8")
+    # Inspect during the pass: ground warnings now intentionally retire with the aircraft.
+    src = HARNESS.read_text(encoding="utf-8").split('-- The aircraft leaves', 1)[0]
     src += SCENARIO          # same chunk, so the harness's locals (M, tick) are in scope
     print("=" * 78)
     print("Does the ground strip follow terrain?")

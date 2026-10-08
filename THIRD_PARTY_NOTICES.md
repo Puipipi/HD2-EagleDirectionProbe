@@ -10,6 +10,10 @@
   third-party runtime mod. This addon does not require, load, or declare a
   dependency on HD2Runtime or any other shared runtime package. The probe's first
   log line prints the capability table so that claim is measured, not asserted.
+* **LuaJIT FFI / Windows kernel32**, present in the game's LuaJIT environment,
+  are used by the isolated terrain query module for bounded read-only memory
+  copies and a validated collision query. No external Runtime or BTO installation
+  is required. The addon never requests a process-write API.
 
 ## Read-only reference / 只读参考
 
@@ -20,6 +24,11 @@ the workspace. No part of any of the following is redistributed here:
   `{name="Beacon", throwable=true, offhand=true, resource_hex="16f397ca5f51f271"}`
   is the source of the beacon identity this probe enumerates, and its code is the
   reference for the `sr.World.units_by_resource` / `tostring(unit)` idioms.
+  The installed BTO's seven-argument query ABI and world/preset validation are
+  also evidence for `src/terrain_query.lua`, which is independently implemented.
+  `terrain_contract.json` / `.lua` contain derived offsets and fingerprints of
+  matching game code, not BTO source or game machine-code bytes. The audit helper
+  uses private, read-only snapshots outside this repository to verify those facts.
 * **Enemy HP** - its kill-feed table provided the GUID-to-name mapping for the
   Eagle entities (`eagle_bomb`, `eagle_base`, `eagle_gunpods`, ...).
 * **homing stim**, **HD2-EXO-Stratagem-Launcher**, **Advanced-Tank-Turret**,

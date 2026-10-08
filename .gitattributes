@@ -8,3 +8,5 @@
 *.png binary
 *.webp binary
 *.zip binary
+# Preserve the generated native contract exactly as shipped in validated packages.
+src/terrain_contract.lua -text

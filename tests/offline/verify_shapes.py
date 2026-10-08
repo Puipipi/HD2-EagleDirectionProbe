@@ -12,7 +12,7 @@ import os
 import pathlib
 import tempfile
 
-from lupa import LuaRuntime
+from lupa.luajit21 import LuaRuntime
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]      # mods/eagle-direction-probe
 PROBE = ROOT / "src" / "eagle_direction_probe.lua"
@@ -59,7 +59,7 @@ for i = 1, #keys do
     end
 end
 print(string.format('RESULT distinct_endpoints=%d edges=%d triangles=%d',
-    #keys, (function() local n = 0 for _ in pairs(edges) do n = n + 1 end return n // 2 end)(), found))
+    #keys, (function() local n = 0 for _ in pairs(edges) do n = n + 1 end return n / 2 end)(), found))
 """
 
 

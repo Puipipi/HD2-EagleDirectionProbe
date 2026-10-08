@@ -12,7 +12,7 @@ import pathlib
 import re
 import tempfile
 
-from lupa import LuaRuntime
+from lupa.luajit21 import LuaRuntime
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]      # mods/eagle-direction-probe
 PROBE = ROOT / "src" / "eagle_direction_probe.lua"

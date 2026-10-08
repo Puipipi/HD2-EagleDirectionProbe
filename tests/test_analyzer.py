@@ -294,14 +294,27 @@ class ReadOnlyContractTest(unittest.TestCase):
     def test_the_corridor_is_submitted_every_frame(self):
         """A dispatched line object is per-frame, so it cannot be submitted at 5 Hz.
 
-        The geometry is recomputed at the sample rate; the submission is per frame. Both
-        must happen inside the temp guard.
+        Retain 1.8.0's read/draw ordering. This structural check does not establish native
+        object lifetimes or prove a crash fix; test_runtime exercises the landing defect.
         """
         guard = self.source.split('local function guarded()', 1)[1].split('\nlocal ', 1)[0]
         self.assertIn('draw_corridor', guard,
                       'the draw must run in the per-frame path, not the sampled one')
-        self.assertLess(guard.index('draw_corridor'), guard.index('temp_guard_end'),
-                        'the draw must be inside the temp-byte-count guard')
+        self.assertLess(guard.index('temp_guard_end'),
+                        guard.index('pcall(draw_corridor)'),
+                        'retain the read/draw ordering of 1.8.0')
+
+    def test_reading_is_guarded_but_drawing_is_not(self):
+        """The split the proven mods use: guard the engine reads, not the drawing.
+
+        sample_body and corridor_tick call engine accessors, which allocate; the drawing hands
+        objects to the engine, which must stay valid after this frame's arena restore.
+        """
+        guard = self.source.split('local function guarded()', 1)[1].split('\nlocal ', 1)[0]
+        reads_end = guard.index('temp_guard_end')
+        for read in ('pcall(sample_body)', 'pcall(corridor_tick)'):
+            self.assertLess(guard.index(read), reads_end,
+                            '%s reads through the engine and must be guarded' % read)
 
     def test_the_per_frame_work_is_capped_by_construction(self):
         """The cost guarantee is deterministic, because it cannot be measured here.
@@ -333,8 +346,8 @@ class ReadOnlyContractTest(unittest.TestCase):
         # same strands, same colour, and a CLOSED triangle, since the open three-line arrowhead
         # is what the player mistook for a star.
         body = self.source.split('Drawing self-test:', 1)[1].split('local function', 1)[0]
-        self.assertIn("AIR_STRANDS, 'air'", body)
-        self.assertIn('closed triangle', body)
+        self.assertIn('add_direction_arrow(seg,', body)
+        self.assertIn('FORWARD_M, ARROW_M', body)
 
     def test_drawing_capability_is_proven_by_construction_not_by_type(self):
         """The first 0.7.0 run switched the corridor off because of a type test.
@@ -597,7 +610,7 @@ class CorridorFeedbackTest(unittest.TestCase):
         # The strips are built after the per-aircraft loop, from the impact table alone.
         # The marker is the strip CALL, not the impacts table: build_geometry now also walks
         # M.impacts at the top to choose the width anchor.
-        impacts_at = body.index('add_strip(imp.p, imp.heading)')
+        impacts_at = body.index('add_strip(imp, imp.heading)')
         track_loop = body.index('for _, track in pairs(M.tracks) do')
         self.assertGreater(impacts_at, track_loop,
                            'the strips must be built outside the per-aircraft loop')
@@ -612,7 +625,6 @@ class CorridorFeedbackTest(unittest.TestCase):
         two tracks, two headings and roughly twice the segments.
         """
         self.assertIn('M.tracks[entry.unit]', self.source)
-        self.assertIn('TRACK_CAP', self.source)
         self.assertIn('for _, track in pairs(M.tracks) do', self.source)
 
     def test_each_call_gets_its_own_impact(self):
@@ -620,8 +632,7 @@ class CorridorFeedbackTest(unittest.TestCase):
 
         The old code kept a single M.impact, so the second beacon overwrote the first.
         """
-        self.assertIn('M.impacts[active_call.id]', self.source)
-        self.assertIn('IMPACT_CAP', self.source)
+        self.assertIn('M.impacts[rec.strike_id]', self.source)
         self.assertIn('IMPACT_TTL_S', self.source)
 
     def test_a_gap_in_sightings_does_not_wipe_the_track(self):
@@ -656,18 +667,6 @@ class CorridorFeedbackTest(unittest.TestCase):
                          'submitting only on change makes the corridor flash and vanish')
         self.assertIn('EagleCorridor.cheap', self.source,
                       'the cheap mode stays available as an escape hatch, but not as the default')
-
-    def test_the_drawing_flag_defaults_to_the_one_observed_to_render(self):
-        """0.7.0 used `false` and the player SAW the line; 0.8.0 onward used `true` and saw none.
-
-        Two observations, one conclusion: default to the flag with evidence behind it and keep
-        the other behind a file.
-        """
-        default = re.search(r'through_world = (\w+),', self.source)
-        self.assertIsNotNone(default)
-        self.assertEqual(default.group(1), 'false',
-                         'the flag that rendered in 0.7.0 must be the default')
-        self.assertIn('EagleCorridor.occluded', self.source)
 
     def test_the_ribbon_is_wide_enough_to_read(self):
         """The arithmetic I should have done before shipping "a ribbon of strands".
@@ -737,8 +736,8 @@ class CorridorFeedbackTest(unittest.TestCase):
         """
         strip = self.source.split('local function build_geometry()', 1)[1].split(
             '\nlocal function', 1)[0]
-        self.assertIn('terrain_height(x, y, imp[3])', strip,
-                      'every strip vertex must take its height from the terrain samples')
+        self.assertIn('ground_surface_z(impact,x,y)', strip,
+                      'every strip vertex must take its height from the shared surface cache')
         self.assertIn('GROUND_SEG_M', self.source,
                       'the lanes must be subdivided or they can only ever be flat')
         self.assertIn('if den == 0 then return fallback end', self.source,

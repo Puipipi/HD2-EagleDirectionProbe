@@ -7,17 +7,17 @@ import os
 import pathlib
 import tempfile
 
-from lupa import LuaRuntime
+from lupa.luajit21 import LuaRuntime
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-PROBE = ROOT / "mods" / "eagle-direction-probe" / "src" / "eagle_direction_probe.lua"
+PROBE = ROOT / "src" / "eagle_direction_probe.lua"
 HARNESS = pathlib.Path(__file__).resolve().parent / "harness_draw.lua"
 
 MODES = [
     ("normal", "the aircraft is always found"),
     ("flaky", "one query in four finds nothing (what the captured mission measured)"),
     ("worldchurn", "main_world() hands back a new table every call"),
-    ("twoair", "TWO Eagles at once - a squadmate, or the Eagle Storm buff"),
+    ("twoair", "two independently tracked Eagles sharing a resource"),
 ]
 
 src = HARNESS.read_text(encoding="utf-8")
@@ -33,6 +33,11 @@ for mode, why in MODES:
     L = LuaRuntime(unpack_returned_tuples=True)
     L.execute(src)
     M = L.eval("HD2EagleDirectionProbe")
+    if M is None:
+        raise RuntimeError("the harness did not load the probe")
+    if M["errors"] != 0:
+        raise RuntimeError("probe replay failed: %s" % (M["emit_error"] or M["last_error"]))
+    L.globals().shutdown()
     if M is not None:
         print("  draw_error=%s  trail_error=%s  errors=%s  box_error=%s"
               % (M["draw_error"], M["trail_error"], M["errors"], M["box_error"]))
