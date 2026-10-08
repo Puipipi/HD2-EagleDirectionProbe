@@ -536,16 +536,25 @@ class CorridorFeedbackTest(unittest.TestCase):
         self.assertIn('geom_key', self.source)
         self.assertIn('M.need_submit', self.source)
 
-    def test_there_is_a_ground_impact_line(self):
-        """Complaint 2: the aircraft line alone does not show where the ordnance lands."""
+    def test_there_is_a_ground_impact_strip(self):
+        """Complaint 2: the aircraft line alone does not show where the ordnance lands.
+
+        And complaint 7: a single line is too easy to misread, so the ground corridor is a
+        HATCHED STRIP - several longitudinal lanes plus cross-hatching, which reads as an area
+        rather than a direction. That matters most because the Eagle arrives fast.
+        """
         self.assertIn('GROUND_HALF_M', self.source)
-        self.assertIn('GROUND_CROSS_M', self.source)
-        self.assertIn('M.impact', self.source)
+        self.assertIn('GROUND_LANES', self.source)
+        self.assertIn('GROUND_TICK_M', self.source)
+        self.assertIn('local function add_strip(', self.source)
+        self.assertIn('M.impacts', self.source)
         # The impact point is the settled thrown beacon - which lies on the ground, so its
         # height is ground level.
         self.assertIn('rec.settled and p', self.source)
+        lanes = int(re.search(r'local GROUND_LANES = (\d+)', self.source).group(1))
+        self.assertGreaterEqual(lanes, 3, 'a strip needs more than a single line')
 
-    def test_the_ground_line_does_not_depend_on_the_aircraft_track(self):
+    def test_the_ground_strip_does_not_depend_on_the_aircraft_track(self):
         """The 0.8.0 bug the player saw as "a white cross that vanished instantly".
 
         The ground geometry was inside the `head and n >= 1` branch, so the moment the
@@ -555,14 +564,47 @@ class CorridorFeedbackTest(unittest.TestCase):
         """
         body = self.source.split('local function build_geometry()', 1)[1].split(
             '\nlocal function', 1)[0]
-        # The impact ribbons must come before the aircraft-track branch opens.
-        impact_at = body.index('local imp = M.impact')
-        track_at = body.index('if head and n >= 1 then')
-        self.assertLess(impact_at, track_at,
-                        'the ground line must be built outside the aircraft-track branch')
+        # The strips are built after the per-aircraft loop, from the impact table alone.
+        impacts_at = body.index('for _, imp in pairs(M.impacts) do')
+        track_loop = body.index('for _, track in pairs(M.tracks) do')
+        self.assertGreater(impacts_at, track_loop,
+                           'the strips must be built outside the per-aircraft loop')
+        self.assertNotIn('M.trail', body)
 
-    def test_a_new_throw_clears_the_previous_impact(self):
-        self.assertIn('M.impact = nil', self.source)
+    def test_each_aircraft_gets_its_own_corridor(self):
+        """Complaint 6: several Eagles at once - a squadmate, or the Eagle Storm buff.
+
+        They all share one resource id, so the probe must key tracks by unit handle. The old
+        code fed every aircraft into one track, which would have drawn a single impossible
+        zig-zag between two aircraft. Verified in the offline harness: two aircraft produce
+        two tracks, two headings and roughly twice the segments.
+        """
+        self.assertIn('M.tracks[entry.unit]', self.source)
+        self.assertIn('TRACK_CAP', self.source)
+        self.assertIn('for _, track in pairs(M.tracks) do', self.source)
+
+    def test_each_call_gets_its_own_impact(self):
+        """Two beacons down at once is two impact points, not one.
+
+        The old code kept a single M.impact, so the second beacon overwrote the first.
+        """
+        self.assertIn('M.impacts[active_call.id]', self.source)
+        self.assertIn('IMPACT_CAP', self.source)
+        self.assertIn('IMPACT_TTL_S', self.source)
+
+    def test_a_gap_in_sightings_does_not_wipe_the_track(self):
+        """The cause of "drawn only a few times", measured and reproduced.
+
+        The captured mission found the aircraft in only about three quarters of samples - 45 of
+        50, 37 of 42, 34 of 44 - and the old code cleared the whole track on the first empty
+        one. The offline harness measured the consequence: a mean of 19 segments instead of 88,
+        because the track never grew past one or two points.
+        """
+        self.assertIn('TRAIL_HOLD_S', self.source)
+        body = self.source.split('local function update_tracks(', 1)[1].split(
+            '\nlocal function', 1)[0]
+        self.assertIn('TRAIL_HOLD_S', body,
+                      'the hold must be applied where tracks are retired')
 
     def test_the_lines_are_ribbons_not_single_lines(self):
         """Complaint 3a: one thin line is invisible, and worse so at range.
@@ -571,7 +613,6 @@ class CorridorFeedbackTest(unittest.TestCase):
         anchor so the ribbon keeps a constant width on screen.
         """
         self.assertIn('AIR_STRANDS', self.source)
-        self.assertIn('GROUND_STRANDS', self.source)
         self.assertIn('STRAND_STEP_PER_M', self.source)
         self.assertIn('local function add_ribbon(', self.source)
         strands = re.search(r'local AIR_STRANDS = (\d+)', self.source)

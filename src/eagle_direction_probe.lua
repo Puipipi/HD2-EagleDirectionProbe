@@ -32,7 +32,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '0.9.0',
+    version = '1.0.0',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -44,10 +44,20 @@ local M = {
     slowest_tick_ms = 0,
     key_costs = {},         -- measured cost of each engine query, for the report
     -- corridor drawing (see the drawing section further down)
-    trail = {},             -- the aircraft's actual ground track, newest last
-    trail_heading = nil,    -- cached unit heading, recomputed at the sample rate
+    -- ONE TRACK PER AIRCRAFT. Not one track for the mod: a second Eagle - a squadmate's call,
+    -- or the Eagle Storm buff that removes the cooldown and lets Eagles come back to back -
+    -- used to be fed into the same track, so the corridor zig-zagged between two aircraft.
+    tracks = {},            -- [unit] = { trail = {...}, heading = {...}, seen = t }
+    track_order = {},
+    -- ONE IMPACT PER CALL, for the same reason: two beacons down at once have two impact
+    -- points, and keeping only the newest threw the other one away.
+    impacts = {},           -- [call] = { p = {...}, heading = {...}, t = t }
+    impact_order = {},
     line = nil,
     line_world = nil,
+    lines = {},             -- [world] = line object; never destroyed inside the draw path
+    line_order = {},
+    lines_created = 0,
     draw_frames = 0,
     draw_slow = 0,
     draw_off = false,
@@ -194,10 +204,34 @@ local THROW_SPEED_MPS = 8
 -- Colour is white now: the player asked for it, and white is also the one colour that
 -- survives a channel-order mistake, since a permutation of 255,255,255 is still white.
 local TRAIL_MAX = 24            -- ground track points kept (about 5 s at 5 Hz)
+
+-- How long the track survives with no aircraft sighting. The measured rate of empty samples
+-- is around a quarter, at 5 Hz, so a fraction of a second is not enough and several seconds
+-- would leave a stale corridor behind. 1.5 s covers the observed gaps and still clears the
+-- line promptly when the pass really ends.
+local TRAIL_HOLD_S = 1.5
+
+-- Several Eagles at once is a normal case, not an edge case: a squadmate calls one, or the
+-- Eagle Storm buff removes the cooldown entirely. Both caps exist so a busy sky cannot grow
+-- these tables without bound.
+local TRACK_CAP = 4
+local IMPACT_CAP = 4
+local IMPACT_TTL_S = 45        -- an impact point is worth showing while the dust settles
+
+-- The ground corridor is a STRIP, not a line. A single line is one pixel wide and is easy to
+-- misread as pointing somewhere it does not - and the Eagle arrives fast enough that a
+-- misread is the whole problem. So: several longitudinal lanes plus cross-hatching, which
+-- reads as an area rather than a direction.
+--
+-- The strip's half-width is the honest ordnance footprint scaled up with distance so it stays
+-- visible, the same trick the air ribbon uses. Near the impact it is near true scale; far away
+-- it is deliberately too wide, because an under-wide warning is the dangerous error.
+local GROUND_LANES = 4
+local GROUND_TICK_M = 20       -- spacing of the cross-hatching
+local GROUND_TRUE_HALF_M = 6   -- honest half-width of an Eagle bomb line
 local FORWARD_M = 900           -- how far ahead to extend along the current heading
 local ARROW_M = 90              -- arrowhead arm length
-local GROUND_HALF_M = 140       -- ground impact line: half its length along the axis
-local GROUND_CROSS_M = 45       -- the perpendicular tick at the impact point
+local GROUND_HALF_M = 140       -- ground strip: half its length along the axis
 
 -- Lateral offset between strands is this fraction of the distance to the anchor, so the
 -- ribbon subtends a constant angle. Calibrated for roughly one pixel per step at 1080p with
@@ -205,7 +239,6 @@ local GROUND_CROSS_M = 45       -- the perpendicular tick at the impact point
 -- not readable without FFI and this probe has none.
 local STRAND_STEP_PER_M = 0.0012
 local AIR_STRANDS = 3
-local GROUND_STRANDS = 5
 
 local DRAW_BUDGET_MS = 8        -- one frame's drawing should fit in this
 local DRAW_SLOW_BEFORE_OFF = 8  -- consecutive breaches before drawing switches itself off
@@ -685,40 +718,86 @@ local function aircraft_forward(unit)
     return { f[1] / len, f[2] / len, f[3] / len }
 end
 
--- Append the aircraft's actual position to the corridor's ground track. Called at the
--- sample rate; the draw only re-submits what is cached here.
-local function update_trail(eagle_entries)
-    if #eagle_entries == 0 then
-        -- Aircraft gone: drop the track so the corridor disappears with it and the next
-        -- pass starts clean instead of inheriting a stale heading.
-        if #M.trail > 0 then
-            M.trail, M.trail_heading = {}, nil
+-- Append each aircraft's actual position to ITS OWN track, and hold tracks across gaps.
+--
+-- A MISSING SAMPLE IS NOT THE AIRCRAFT LEAVING. This cleared the whole track the instant one
+-- query came back empty, and the captured mission shows how wrong that was: the aircraft was
+-- present in 45 of 50 samples in one call, 37 of 42 in the next and 34 of 44 in the third, so
+-- roughly a quarter of the samples found nothing. Each of those wiped the track, and the
+-- corridor therefore never grew past one or two points - measured in the offline harness as a
+-- mean of 19 segments instead of 88. That is what the player reported as the line "being drawn
+-- only a few times" and as the arrow not appearing at all on two throws.
+--
+-- MULTIPLE AIRCRAFT. A squadmate's Eagle, or the Eagle Storm buff that removes the cooldown,
+-- puts more than one aircraft in the air, and they all share one resource id. They are keyed
+-- by unit handle, so each gets its own track and its own corridor instead of the two being
+-- interleaved into one impossible zig-zag.
+local function update_tracks(eagle_entries)
+    local now = os.clock()
+    for _, entry in ipairs(eagle_entries) do
+        local track = M.tracks[entry.unit]
+        if track == nil then
+            track = { trail = {}, heading = nil, seen = now }
+            M.tracks[entry.unit] = track
+            M.track_order[#M.track_order + 1] = entry.unit
         end
-        return
-    end
-    local entry = eagle_entries[1]
-    local p = world_position(entry.unit)
-    if p == nil then return end
-    local trail = M.trail
-    local last = trail[#trail]
-    if last == nil then
-        trail[1] = { p[1], p[2], p[3] }
-    else
-        local dx, dy, dz = p[1] - last[1], p[2] - last[2], p[3] - last[3]
-        -- 0.5 m: below the aircraft's real motion at any speed it flies, above jitter.
-        if dx * dx + dy * dy + dz * dz > 0.25 then
-            trail[#trail + 1] = { p[1], p[2], p[3] }
-            if #trail > TRAIL_MAX then table.remove(trail, 1) end
+        track.seen = now
+        local p = world_position(entry.unit)
+        if p ~= nil then
+            local trail = track.trail
+            local last = trail[#trail]
+            if last == nil then
+                trail[1] = { p[1], p[2], p[3] }
+            else
+                local dx, dy, dz = p[1] - last[1], p[2] - last[2], p[3] - last[3]
+                -- 0.5 m: below the aircraft's real motion at any speed it flies, above jitter.
+                if dx * dx + dy * dy + dz * dz > 0.25 then
+                    trail[#trail + 1] = { p[1], p[2], p[3] }
+                    if #trail > TRAIL_MAX then table.remove(trail, 1) end
+                end
+            end
+            local head = aircraft_forward(entry.unit)
+            if head == nil and #trail >= 2 then
+                local a, b = trail[#trail - 1], trail[#trail]
+                local dx, dy, dz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+                local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if len > 0 then head = { dx / len, dy / len, dz / len } end
+            end
+            if head then track.heading = head end
         end
     end
-    local head = aircraft_forward(entry.unit)
-    if head == nil and #trail >= 2 then
-        local a, b = trail[#trail - 1], trail[#trail]
-        local dx, dy, dz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
-        local len = math.sqrt(dx * dx + dy * dy + dz * dz)
-        if len > 0 then head = { dx / len, dy / len, dz / len } end
+
+    -- Retire tracks that have really gone, and bound the table so unit churn cannot grow it.
+    local live = {}
+    for unit, track in pairs(M.tracks) do
+        if (now - track.seen) > TRAIL_HOLD_S then
+            M.tracks[unit] = nil
+        else
+            live[#live + 1] = unit
+        end
     end
-    if head then M.trail_heading = head end
+    table.sort(live, function(a, b) return M.tracks[a].seen < M.tracks[b].seen end)
+    while #live > TRACK_CAP do
+        M.tracks[live[1]] = nil
+        table.remove(live, 1)
+    end
+    M.track_order = live
+end
+
+-- Which aircraft is most likely to be serving this impact. With two Eagles up there is no way
+-- to know from the outside which beacon each one was called for, so the nearest live aircraft
+-- is the best available guess - and being a guess, it is only used to choose the ground strip's
+-- alignment. The strip's POSITION comes from the beacon, which is not a guess.
+local function nearest_heading(point)
+    local best, best_d = nil, nil
+    for _, track in pairs(M.tracks) do
+        local last = track.trail[#track.trail]
+        if last and track.heading then
+            local d = (last[1] - point[1]) ^ 2 + (last[2] - point[2]) ^ 2
+            if best_d == nil or d < best_d then best, best_d = track.heading, d end
+        end
+    end
+    return best
 end
 
 local function sample_body()
@@ -776,13 +855,13 @@ local function sample_body()
         log(string.format('status: worlds=%s session=%s (%s) beacon_units=%d '
             .. 'aircraft_units=%d temp_bytes=%s last_tick=%.1fms samples=%d calls=%d '
             .. 'backoff=x%d draw=%.2fms peak_draw=%.2fms frame_peak=%.1fms slow_frames=%d '
-            .. 'segments=%d submits=%d trail=%d head=%s impact=%s',
+            .. 'segments=%d submits=%d tracks=%d impacts=%d',
             tostring(count_worlds()), tostring(live),
             tostring(why), #beacon_entries, #eagle_entries, tostring(M.last_temp_bytes),
             M.last_tick_ms or 0, M.samples, M.calls, M.backoff or 1,
             M.draw_last_ms or 0, M.draw_peak_ms or 0, M.frame_peak_ms or 0,
-            M.frame_slow or 0, M.seg_count or 0, M.submits or 0, #M.trail,
-            tostring(M.trail_heading ~= nil), tostring(M.impact ~= nil)))
+            M.frame_slow or 0, M.seg_count or 0, M.submits or 0, #M.track_order,
+            #M.impact_order))
         emit({ kind = 'status', t = now,
                note = string.format('worlds=%s session=%s beacon=%d aircraft=%d',
                    tostring(count_worlds()), tostring(live), #beacon_entries,
@@ -836,10 +915,18 @@ local function sample_body()
         if rec and rec.thrown and thrown == nil then thrown = entry.unit end
         entry.primary = (rec ~= nil and rec.thrown == true) or false
         -- The thrown beacon's latest position is the impact point once it has settled: it is
-        -- lying on the ground, so its height IS ground level, and the ground line has to be
-        -- drawn there rather than at the aircraft's altitude.
-        if entry.primary and rec and rec.settled and p then
-            M.impact = { p[1], p[2], p[3] }
+        -- lying on the ground, so its height IS ground level. Keyed by CALL, because two
+        -- calls can be down at once and keeping only the newest threw the other one away.
+        if entry.primary and rec and rec.settled and p and active_call then
+            local imp = M.impacts[active_call.id]
+            if imp == nil then
+                imp = { p = { p[1], p[2], p[3] }, heading = nearest_heading(p), t = now }
+                M.impacts[active_call.id] = imp
+            else
+                imp.p = { p[1], p[2], p[3] }
+                imp.t = now
+                if imp.heading == nil then imp.heading = nearest_heading(p) end
+            end
         end
     end
 
@@ -866,12 +953,7 @@ local function sample_body()
 
     if thrown ~= nil and active_call == nil then
         begin_call(now, beacon_entries)
-        if active_call then
-            active_call.primary_unit = thrown
-            -- A new throw invalidates the previous impact point. Without this the ground
-            -- line from the last call would still be on the ground under the new one.
-            M.impact = nil
-        end
+        if active_call then active_call.primary_unit = thrown end
     end
 
 
@@ -964,22 +1046,62 @@ local function drawing_allowed(now)
 end
 
 local function release_line()
-    if M.line and M.line_world then
-        pcall(sr.World.destroy_line_object, M.line_world, M.line)
+    -- Destroy every line object we hold. Called on shutdown, on eviction, and when drawing
+    -- switches itself off - NEVER inside the draw path, which is the important part. The
+    -- worldchurn harness run showed the old code creating and destroying a line object every
+    -- single frame whenever the world value did not compare equal, and a per-frame create/
+    -- destroy pair is the one thing here that could make the corridor render unreliably.
+    if M.lines then
+        for world, line in pairs(M.lines) do
+            pcall(sr.World.destroy_line_object, world, line)
+        end
     end
-    M.line, M.line_world = nil, nil
+    M.lines, M.line_order, M.line, M.line_world = {}, {}, nil, nil
     M.seg, M.geom_key, M.need_submit = nil, nil, false
 end
 
+local LINE_CAP = 4
+
 local function ensure_line(world)
     if M.line and M.line_world == world then return M.line end
-    release_line()
+    M.lines = M.lines or {}
+    M.line_order = M.line_order or {}
+    local existing = M.lines[world]
+    if existing ~= nil then
+        -- The same world seen again: reuse its line object instead of destroying and
+        -- recreating, which is what the old identity comparison did on every frame.
+        M.line, M.line_world = existing, world
+        return existing
+    end
     -- The second argument is copied from a mod that uses `true` for the world geometry it
     -- wants seen through the world, and the player reported the `false` lines being hidden
     -- by buildings. I have NOT established what the flag means; OCCLUDED_FILE puts it back.
     local ok, line = pcall(sr.World.create_line_object, world, M.through_world)
     if not ok or line == nil then return nil end
+    M.lines[world] = line
+    M.line_order[#M.line_order + 1] = world
+    -- This assignment was MISSED when this function was rewritten, and the omission was
+    -- invisible in the ordinary case: with a stable world the next frame takes the reuse path
+    -- above and sets M.line there, so only a run with a changing world value ever showed it -
+    -- as a corridor that was built every frame and never submitted once.
     M.line, M.line_world = line, world
+    M.lines_created = (M.lines_created or 0) + 1
+    if M.lines_created == 4 and not M.lines_warned then
+        M.lines_warned = true
+        -- Not fatal by itself, but the Guard Dogs mod keeps one line object per world and
+        -- never destroys them, which says the world value IS stable across frames. If this
+        -- count climbs, that assumption is wrong in this build - and this line is how the
+        -- game gets to answer that instead of me guessing.
+        log('NOTE: 4 line objects created; if this keeps climbing, world identity is not '
+            .. 'stable in this build')
+    end
+    while #M.line_order > LINE_CAP do
+        local oldest = table.remove(M.line_order, 1)
+        if oldest ~= world and M.lines[oldest] ~= nil then
+            pcall(sr.World.destroy_line_object, oldest, M.lines[oldest])
+            M.lines[oldest] = nil
+        end
+    end
     return line
 end
 
@@ -1035,67 +1157,77 @@ end
 
 local function build_geometry()
     local seg = {}
-    local trail = M.trail
-    local n = #trail
-    local head = M.trail_heading
 
-    -- The anchor is the point the lines are measured against for width scaling. The landed
-    -- beacon or the aircraft's own position is the best proxy available for the camera, which
-    -- this probe cannot read (no FFI).
-    M.anchor = M.impact or trail[n] or M.anchor
-
-    -- 1. The aircraft's actual ground track.
-    for i = 1, n - 1 do
-        local a, b = trail[i], trail[i + 1]
-        add_ribbon(seg, a[1], a[2], a[3], b[1], b[2], b[3], AIR_STRANDS, 'air')
-    end
-
-    local imp = M.impact
-
-    -- 2. THE GROUND LINE, and it is deliberately NOT inside the aircraft-track branch.
-    --
-    -- It was, in 0.8.0, and that is why the player saw a white cross appear for an instant
-    -- and vanish: the moment the aircraft left, the track emptied and the ground line went
-    -- with it - the one thing that was supposed to answer "where does this land" was tied to
-    -- the thing that had already gone. The ground geometry depends on the impact point and
-    -- the heading, and on nothing else.
-    if imp and head then
+    -- The ground strip: a hatched band through the impact point, aligned with the heading of
+    -- the aircraft judged most likely to be serving it.
+    local function add_strip(imp, head)
         local hx, hy = head[1], head[2]
         local hlen = math.sqrt(hx * hx + hy * hy)
-        if hlen > 0 then
-            hx, hy = hx / hlen, hy / hlen
-            -- The impact axis, at the landed beacon's own height - which IS ground level,
-            -- because the beacon is lying on it.
-            add_ribbon(seg,
-                imp[1] - hx * GROUND_HALF_M, imp[2] - hy * GROUND_HALF_M, imp[3],
-                imp[1] + hx * GROUND_HALF_M, imp[2] + hy * GROUND_HALF_M, imp[3],
-                GROUND_STRANDS, 'ground')
-            -- The perpendicular tick that marks the impact point itself.
-            add_ribbon(seg,
-                imp[1] + hy * GROUND_CROSS_M, imp[2] - hx * GROUND_CROSS_M, imp[3],
-                imp[1] - hy * GROUND_CROSS_M, imp[2] + hx * GROUND_CROSS_M, imp[3],
-                GROUND_STRANDS, 'ground')
+        if hlen <= 0 then return end
+        hx, hy = hx / hlen, hy / hlen
+        local px, py = -hy, hx
+        local a = M.anchor
+        local dist = 80
+        if a then
+            dist = math.sqrt((imp[1] - a[1]) ^ 2 + (imp[2] - a[2]) ^ 2 + (imp[3] - a[3]) ^ 2)
+        end
+        local half = math.max(GROUND_TRUE_HALF_M,
+            STRAND_STEP_PER_M * math.max(dist, 25) * GROUND_LANES)
+        local c = colour('ground')
+        -- Longitudinal lanes.
+        for i = 0, GROUND_LANES - 1 do
+            local o = -half + (2 * half) * (i / (GROUND_LANES - 1))
+            seg[#seg + 1] = { c,
+                sr.Vector3(imp[1] - hx * GROUND_HALF_M + px * o,
+                           imp[2] - hy * GROUND_HALF_M + py * o, imp[3]),
+                sr.Vector3(imp[1] + hx * GROUND_HALF_M + px * o,
+                           imp[2] + hy * GROUND_HALF_M + py * o, imp[3]) }
+        end
+        -- Cross-hatching, which is what makes it read as an area.
+        local ticks = math.floor((2 * GROUND_HALF_M) / GROUND_TICK_M)
+        for i = 0, ticks do
+            local t = -GROUND_HALF_M + i * GROUND_TICK_M
+            local cx, cy = imp[1] + hx * t, imp[2] + hy * t
+            seg[#seg + 1] = { c,
+                sr.Vector3(cx + px * half, cy + py * half, imp[3]),
+                sr.Vector3(cx - px * half, cy - py * half, imp[3]) }
         end
     end
 
-    -- 3. The aircraft's own line: forward extension and arrowhead, when the track exists.
-    if head and n >= 1 then
-        local p = trail[n]
-        local tx = p[1] + head[1] * FORWARD_M
-        local ty = p[2] + head[2] * FORWARD_M
-        local tz = p[3] + head[3] * FORWARD_M
-        add_ribbon(seg, p[1], p[2], p[3], tx, ty, tz, AIR_STRANDS, 'air')
-        local bx, by = -head[1], -head[2]
-        local len = math.sqrt(bx * bx + by * by)
-        if len > 0 then
-            bx, by = bx / len, by / len
-            local px, py = -by, bx
-            for _, s in ipairs({ 1, -1 }) do
-                add_ribbon(seg, tx, ty, tz,
-                    tx + (bx + px * s) * ARROW_M, ty + (by + py * s) * ARROW_M, tz,
-                    AIR_STRANDS, 'air')
+    -- One corridor per aircraft, so two Eagles get two corridors instead of one zig-zag.
+    for _, track in pairs(M.tracks) do
+        local trail = track.trail
+        local n = #trail
+        local head = track.heading
+        M.anchor = M.anchor or trail[n]
+        for i = 1, n - 1 do
+            local a, b = trail[i], trail[i + 1]
+            add_ribbon(seg, a[1], a[2], a[3], b[1], b[2], b[3], AIR_STRANDS, 'air')
+        end
+        if head and n >= 1 then
+            local p = trail[n]
+            local tx = p[1] + head[1] * FORWARD_M
+            local ty = p[2] + head[2] * FORWARD_M
+            local tz = p[3] + head[3] * FORWARD_M
+            add_ribbon(seg, p[1], p[2], p[3], tx, ty, tz, AIR_STRANDS, 'air')
+            local bx, by = -head[1], -head[2]
+            local len = math.sqrt(bx * bx + by * by)
+            if len > 0 then
+                bx, by = bx / len, by / len
+                local ax, ay = -by, bx
+                for _, s in ipairs({ 1, -1 }) do
+                    add_ribbon(seg, tx, ty, tz,
+                        tx + (bx + ax * s) * ARROW_M, ty + (by + ay * s) * ARROW_M, tz,
+                        AIR_STRANDS, 'air')
+                end
             end
         end
+    end
+
+    -- The ground strips, deliberately OUTSIDE the aircraft loop: they depend on the impact
+    -- points and their stored headings, and on nothing about whether an aircraft is still up.
+    for _, imp in pairs(M.impacts) do
+        if imp.heading then add_strip(imp.p, imp.heading) end
     end
 
     M.seg = seg
@@ -1105,17 +1237,24 @@ end
 -- What the geometry currently is, cheaply. A change here is what triggers a rebuild and a
 -- re-submission; nothing else does, which is where the frame rate came back from.
 local function geometry_key()
-    local trail = M.trail
-    local n = #trail
-    local last = trail[n]
-    local head = M.trail_heading
-    local imp = M.impact
-    return table.concat({
-        n,
-        last and string.format('%.1f,%.1f,%.1f', last[1], last[2], last[3]) or '-',
-        head and string.format('%.3f,%.3f', head[1], head[2]) or '-',
-        imp and string.format('%.1f,%.1f,%.1f', imp[1], imp[2], imp[3]) or '-',
-    }, '|')
+    local parts = {}
+    for unit, track in pairs(M.tracks) do
+        local trail = track.trail
+        local n = #trail
+        local last = trail[n]
+        local h = track.heading
+        parts[#parts + 1] = string.format('%s:%d:%s:%s', tostring(unit), n,
+            last and string.format('%.1f,%.1f,%.1f', last[1], last[2], last[3]) or '-',
+            h and string.format('%.2f,%.2f', h[1], h[2]) or '-')
+    end
+    for call, imp in pairs(M.impacts) do
+        parts[#parts + 1] = string.format('i%s:%.1f,%.1f,%.1f:%s', tostring(call),
+            imp.p[1], imp.p[2], imp.p[3],
+            imp.heading and string.format('%.2f,%.2f', imp.heading[1], imp.heading[2]) or '-')
+    end
+    -- pairs() order is not stable, and an unstable key would rebuild the geometry every frame.
+    table.sort(parts)
+    return table.concat(parts, '|')
 end
 
 local function submit_geometry()
@@ -1158,12 +1297,11 @@ local function draw_corridor()
     -- would have left the switch effective only on restart - the opposite of what the README
     -- promises and of what makes it an escape hatch.
     if not drawing_allowed(os.clock()) then return end
-    local trail = M.trail
 
     -- Drawing self-test: a fixed line beside the ship, so the line API is proven on this
     -- build while the player is still on the ship. It clears itself afterwards; the file
     -- is the opt-in, and the log line is the result.
-    if M.selftest and #trail == 0 and M.selftest_origin then
+    if M.selftest and next(M.tracks) == nil and M.selftest_origin then
         local world = main_world()
         if world == nil then return end
         local line = ensure_line(world)
@@ -1202,7 +1340,7 @@ local function draw_corridor()
         return
     end
 
-    if #trail == 0 and M.impact == nil then
+    if next(M.tracks) == nil and next(M.impacts) == nil then
         -- Nothing to show: hide any line left over from the previous pass rather than
         -- leaving a stale corridor on screen after the aircraft is gone.
         hide_line()
@@ -1223,6 +1361,9 @@ local function draw_corridor()
             M.geom_key = key
             return
         end
+        -- Remembered on BOTH paths. Leaving it unset here meant every frame rebuilt the
+        -- geometry and re-submitted it - the exact per-frame work the caching exists to avoid.
+        M.geom_key = key
         M.need_submit = true
     end
 
@@ -1243,13 +1384,31 @@ end
 -- the player reported it as "drawn only a few times". Splitting the two rates is the whole
 -- fix; the engine queries it needs were measured at 0.00 ms.
 local function corridor_tick()
+    local now = os.clock()
     local world = main_world()
     if world == nil then return end
     local entries = {}
     for _, unit in ipairs(units_by_resource(world, EAGLE_RESOURCE)) do
         entries[#entries + 1] = { src = 'aircraft', unit = unit }
     end
-    update_trail(entries)
+    update_tracks(entries)
+
+    -- Impact points are retired by age and then by count, so a long mission cannot accumulate
+    -- stale strips on the ground.
+    local live = {}
+    for call, imp in pairs(M.impacts) do
+        if (now - imp.t) > IMPACT_TTL_S then
+            M.impacts[call] = nil
+        else
+            live[#live + 1] = call
+        end
+    end
+    table.sort(live, function(a, b) return M.impacts[a].t < M.impacts[b].t end)
+    while #live > IMPACT_CAP do
+        M.impacts[live[1]] = nil
+        table.remove(live, 1)
+    end
+    M.impact_order = live
 end
 
 -- Every tick runs inside the temp-byte-count guard and is timed. A tick that busts the
@@ -1272,7 +1431,15 @@ local function guarded()
         and now_ms >= (M.corridor_next or 0)
         and (os.clock() - (M.started or 0)) > STARTUP_GRACE_S then
         M.corridor_next = now_ms + (1000 / CORRIDOR_HZ)
-        pcall(corridor_tick)
+        local tick_ok, tick_err = pcall(corridor_tick)
+        if not tick_ok then
+            M.errors = M.errors + 1
+            M.trail_error = tostring(tick_err)
+            if not M.trail_error_logged then
+                M.trail_error_logged = true
+                log('corridor track ERRORED: ' .. tostring(tick_err))
+            end
+        end
     end
 
     -- The draw itself runs inside the same temp guard. Its geometry is rebuilt only when it
@@ -1280,7 +1447,21 @@ local function guarded()
     -- came back from. The cost is MEASURED now, through clock_ms(); the coarse os.clock() could
     -- not see the cost the player could feel.
     local draw_began = clock_ms()
-    if ok and M.draw_enabled and not M.draw_off then pcall(draw_corridor) end
+    if ok and M.draw_enabled and not M.draw_off then
+        -- The error is CAPTURED, not swallowed. This pcall silently discarded an exception
+        -- inside draw_corridor, and the only symptom was a corridor that never appeared -
+        -- which is indistinguishable from the corridor having nothing to draw. The offline
+        -- harness found it; a log line would have found it in the field.
+        local draw_ok, draw_err = pcall(draw_corridor)
+        if not draw_ok then
+            M.errors = M.errors + 1
+            M.draw_error = tostring(draw_err)
+            if not M.draw_error_logged then
+                M.draw_error_logged = true
+                log('corridor draw ERRORED: ' .. tostring(draw_err))
+            end
+        end
+    end
     local draw_spent = clock_ms() - draw_began
     M.draw_last_ms = draw_spent
     if draw_spent > (M.draw_peak_ms or 0) then M.draw_peak_ms = draw_spent end
@@ -1431,8 +1612,8 @@ local function install()
     local has_clock = type(app) == 'table'
         and type(rawget(app, 'time_since_launch')) == 'function'
     log(string.format('corridor: %s | ground impact line: yes | white, %d air / %d ground '
-        .. 'strands | through geometry: %s | submit: %s | clock: %s',
-        M.draw_enabled and 'ON' or 'OFF', AIR_STRANDS, GROUND_STRANDS,
+        .. 'lanes | through geometry: %s | submit: %s | clock: %s',
+        M.draw_enabled and 'ON' or 'OFF', AIR_STRANDS, GROUND_LANES,
         tostring(M.through_world), M.every_frame and 'every frame' or 'on geometry change',
         has_clock and 'Application.time_since_launch (measured)' or 'os.clock (coarse)'))
     log(string.format('files: off=%s occluded=%s everyframe=%s selftest=%s',
