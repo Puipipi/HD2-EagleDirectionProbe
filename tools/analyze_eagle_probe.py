@@ -203,9 +203,19 @@ def tracks(records, key, up):
         for unit in rec.get(key) or []:
             if 'p' not in unit:
                 continue
-            entry = out.setdefault(unit['id'], {'src': None, 'rows': []})
+            # Track per the probe's instance marker when it gives one. Several objects share
+            # a resource id, so the id alone is NOT an instance key.
+            if unit.get('primary'):
+                instance = 'primary'
+            elif unit.get('i'):
+                instance = unit['i']
+            else:
+                instance = unit['id']
+            entry = out.setdefault(instance, {'src': None, 'rows': [], 'primary': False})
             if entry['src'] is None:
                 entry['src'] = unit.get('src')
+            if unit.get('primary'):
+                entry['primary'] = True
             entry['rows'].append((rec.get('t', 0.0), unit['p'], unit.get('f')))
     for entry in out.values():
         entry['rows'].sort(key=lambda r: r[0])
@@ -267,7 +277,13 @@ def analyze_call(call_id, records, up, label=None):
     beacons = tracks(records, 'beacons', up)
     eagles = tracks(records, 'eagles', up)
 
-    chosen_beacon = longest(list(beacons.values()))
+    # Use only the beacon that was actually THROWN when the probe marks one. Several
+    # beacon-identity objects coexist and they all log the SAME resource id, so without
+    # this filter the track mixes the thrown beacon with the landed props and the
+    # player-to-beacon line is computed across different objects - which is exactly what
+    # made the first captured mission's geometry unusable.
+    primaries = [entry for entry in beacons.values() if entry.get('primary')]
+    chosen_beacon = longest(primaries) or longest(list(beacons.values()))
     beacon_rows = chosen_beacon['rows'] if chosen_beacon else None
     if not beacon_rows or len(beacon_rows) < 2:
         return {'call': call_id, 'status': 'no usable beacon track'}
@@ -315,13 +331,31 @@ def analyze_call(call_id, records, up, label=None):
     out['eagle_visible_for_s'] = round(eagle_rows[-1][0] - eagle_rows[0][0], 3)
     out['eagle_travel_m_horizontal'] = round(travelled, 2)
     out['eagle_forward_deg'] = forward_direction(eagle_rows, up)
-    if measured is None:
+    out['endpoint_heading_deg'] = None if measured is None else round(measured, 2)
+    if measured is not None:
+        out['endpoint_minus_forward_deg'] = (
+            None if out['eagle_forward_deg'] is None
+            else round(norm180(measured - out['eagle_forward_deg']), 2))
+
+    # The heading the rules are scored against.
+    #
+    # Prefer the aircraft's own forward vector: it is instantaneous and averaged over the
+    # pass, whereas first-to-last differencing collapses the whole window into a chord and
+    # reports nonsense if the aircraft turns inside it. In the ten-call capture, eight calls
+    # agreed within 9 degrees and two disagreed by 150-160 - the endpoint estimator was the
+    # one that was wrong, and the forward vector is recorded independently by the probe.
+    heading = out['eagle_forward_deg']
+    out['heading_source'] = 'aircraft forward vector'
+    if heading is None:
+        heading = measured
+        out['heading_source'] = 'endpoint chord (no forward vector captured)'
+    if heading is None:
         return out
 
-    out['measured_heading_deg'] = round(measured, 2)
+    out['measured_heading_deg'] = round(heading, 2)
     errors = {}
     for rule in RULES:
-        errors[rule] = round(norm180(measured - predict_heading(rule, line_bearing)), 2)
+        errors[rule] = round(norm180(heading - predict_heading(rule, line_bearing)), 2)
     out['rule_errors_deg'] = errors
     best = min(RULES, key=lambda r: abs(errors[r]))
     out['best_rule'] = best
