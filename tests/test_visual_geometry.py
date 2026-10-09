@@ -53,7 +53,7 @@ class VisualGeometryTest(unittest.TestCase):
 
     def test_ground_has_sparse_forward_chevrons_and_a_center_diamond(self):
         ground = [s for s in self.segments if s[0] in ('ground', 'holo','flow') and s[1][2] < 1]
-        self.assertLessEqual(len(ground), 350, 'bound the filled ground glyphs and edges per pass')
+        self.assertLessEqual(len(ground), 450, 'bound the enlarged filled glyphs and thicker edges per pass')
         diagonal = [s for s in ground if abs(s[1][0] - s[2][0]) > 1
                     and abs(s[1][1] - s[2][1]) > 1]
         self.assertGreaterEqual(len(diagonal), 10, 'direction arrow silhouettes must be visible')
@@ -63,15 +63,15 @@ class VisualGeometryTest(unittest.TestCase):
                                msg='compact upright diamond must stay at the actual beacon')
         self.assertLessEqual(max(abs(s[k][i]) for s in marker for k in (1, 2) for i in (0, 1)), 1.4)
 
-    def test_ground_double_edges_and_lift(self):
+    def test_ground_thick_solid_edges_and_lift(self):
         ground = [s for s in self.segments if s[0] in ('ground', 'holo') and s[1][2] < 1]
         edges = [s for s in ground if abs(s[1][1] - s[2][1]) < 0.001
                  and abs(s[1][0] - s[2][0]) >= 8]
         offsets = sorted(set(round(s[1][1], 3) for s in edges))
-        self.assertGreaterEqual(len(offsets), 4)
+        self.assertGreaterEqual(len(offsets), 6)
         for side in ([o for o in offsets if o < 0], [o for o in offsets if o > 0]):
-            self.assertGreaterEqual(len(side), 2)
-            self.assertLess(max(side) - min(side), 1, 'paired edges must remain close together')
+            self.assertGreaterEqual(len(side), 3)
+            self.assertAlmostEqual(max(side) - min(side), 0.5, msg='fixed-width white band changed')
         self.assertLessEqual(max(abs(s[1][0] - s[2][0]) for s in edges), 15,
                              'long chords miss known changes in terrain height')
         self.assertTrue(all(s[k][2] > 0.1 for s in ground for k in (1, 2)),
@@ -82,7 +82,7 @@ class VisualGeometryTest(unittest.TestCase):
         self.assertLessEqual(max(s[k][0] for s in air for k in (1, 2)), 200)
         self.assertTrue(any(s[0] == 'trail' for s in self.segments),
                         'the flown path needs its own dim colour')
-        self.assertLessEqual(len(self.segments), 900, 'filled silhouettes have a bounded per-pass cost')
+        self.assertLessEqual(len(self.segments), 1250, 'cordon/text plus enlarged silhouettes have a bounded per-pass cost')
 
 
 if __name__ == '__main__':

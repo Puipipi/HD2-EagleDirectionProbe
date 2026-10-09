@@ -73,7 +73,7 @@ M.geom_key = nil
 tick(1)
 local n = 0
 for _, s in ipairs(M.seg or {}) do
-    if s[1] == 'holo' then
+    if s[1] == 'ground' then
         for k = 2, 3 do
             local x, y, z = s[k][1], s[k][2], s[k][3]
             if x >= 0 and y >= 0 and x + y <= 100 and z < 40 then

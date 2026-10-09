@@ -46,11 +46,11 @@ def main():
         assert width==height and width>=512, 'cover should be a readable square image'
     for name, source in {build.RESOURCE: build.SOURCE, **build.EXTRA_SOURCES}.items():
         assert current[resource_hash(name)] == source.read_bytes(), name + ' differs from source'
-    previous = resources(build.DIST / 'HD2-EagleDirectionProbe-1.9.7.zip')
+    previous = resources(build.DIST / 'HD2-EagleDirectionProbe-1.9.8.zip')
     for name in build.EXTRA_SOURCES:
         assert current[resource_hash(name)] == previous[resource_hash(name)], 'native module changed'
     print('ZIP CRC, manifest, all 3 resource payloads: OK')
-    print('Native terrain resources byte-identical to 1.9.7: OK')
+    print('Native terrain resources byte-identical to 1.9.8: OK')
     print('Manager IconPath/option Image and bundled square PNG: OK (%d x %d)' % (width,height))
     print('Bytes:', path.stat().st_size)
     print('SHA256:', hashlib.sha256(path.read_bytes()).hexdigest())

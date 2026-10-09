@@ -93,7 +93,7 @@ end
 frames(10)
 for _,s in ipairs(M.flow_seg or {}) do
     if x[s[1]] then
-        assert(s[2][1]>x[s[1]]+2 and s[2][1]<x[s[1]]+4,'sky arrows did not travel forward')
+        assert(s[2][1]>x[s[1]]+4.5 and s[2][1]<x[s[1]]+5.5,'sky arrows did not travel forward')
         x[s[1]]=nil
     end
 end

@@ -156,12 +156,12 @@ for _,s in ipairs(M.flow_seg) do
 end
 assert(tip,'travelling head outline is missing')
 local t=tip[1]
-assert(joined({t-4,-2.2},{t,0},function(v)
-    return math.abs(v[2]-(v[1]-t)*0.55)<0.001 end), 'left head side is broken')
-assert(joined({t,0},{t-4,2.2},function(v)
-    return math.abs(v[2]+(v[1]-t)*0.55)<0.001 end), 'right head side is broken')
-assert(joined({t-4,2.2},{t-4,-2.2},function(v)
-    return math.abs(v[1]-(t-4))<0.001 end), 'ground head has no closed base')
+assert(joined({t-5.2,-2.9},{t,0},function(v)
+    return math.abs(v[2]-(v[1]-t)*(2.9/5.2))<0.001 end), 'left head side is broken')
+assert(joined({t,0},{t-5.2,2.9},function(v)
+    return math.abs(v[2]+(v[1]-t)*(2.9/5.2))<0.001 end), 'right head side is broken')
+assert(joined({t-5.2,2.9},{t-5.2,-2.9},function(v)
+    return math.abs(v[1]-(t-5.2))<0.001 end), 'ground head has no closed base')
 ''')
 
     def test_ground_direction_follows_approach_but_not_departure_turn(self):

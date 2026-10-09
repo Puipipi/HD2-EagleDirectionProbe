@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.9.8'
+VERSION = '1.9.9'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -59,7 +59,13 @@ WHAT THIS IS
   arrows, a compact filled landing diamond and five moving UPRIGHT sky arrows.
   Each sky arrow is a single vertical plane with a shaft and pointed head (->),
   14 m long and 6.4 m tall. Its centre floats 12 m above cached terrain, without
-  borders. Both ground/sky move 6 m/s; motion is cached at 20 Hz.
+  borders. Both ground/sky move 10 m/s; motion is cached at 20 Hz.
+  Ground triangles are 5.2 m long and 5.8 m wide. White ground borders use three
+  continuous strands over 0.5 m. Long edges carry seven spaced upright red light
+  panels per side, with dim scan fill, a bright baseline and a short upper bracket.
+  Panels start 1.1 m above cached ground. Central panels carry EAGLE ? lettering.
+  Tape and lettering reuse the static ground cache; they add no collision queries.
+  Exact type and full strike range are not identified; no automatic range adaptation.
   Filled silhouettes use dense scan lines on the verified LineObject renderer,
   not new native GUI/material calls; very close views can reveal scan lines.
   Ground and aircraft guides retire together on a confirmed departure climb,
@@ -84,18 +90,20 @@ WHAT THIS IS
   Ground arrow sides also bend along the cached samples, without extra queries.
   The sky has arrows ONLY, no boundary. Five rigid glyph centres sit 12 m above
   their locally sampled surface (beacon height fallback), along the incoming axis.
-  Sky brightness flows gently forward. Ground arrows travel at 6 m/s, with their
+  Sky brightness flows gently forward. Ground arrows travel at 10 m/s, with their
   geometry cached at 20 Hz separately from static outlines; no extra ray queries.
   Mod Options Menu (optional): MODS > 飞鹰方向指引. Toggles: 透视显示 (OFF by
   default), 飞鹰指示箭头 (ON), 天空方向箭头 (ON), 地面走廊边框 (ON),
-  地面走廊三角 (ON). Click Apply; the menu saves choices. Either ground option
+  地面走廊三角 (ON), 红色全息警戒带 (ON). The red tape follows the border switch.
+  Click Apply; the menu saves choices. Either ground option
   shows the landing diamond. Hiding the aircraft arrow also hides its trail.
   Choices apply during a mission. Without the menu, these defaults are used.
   Saved choices are restored before synchronizing defaults, as in Stratagem Cooldown.
   Hiding both sky and ground stops new terrain queries.
   Ground geometry is cached independently of aircraft movement. Scalar height
   interpolation and shared animation signatures reduce Lua CPU/allocations;
-  line density and query budgets are preserved. Game FPS gains are unverified.
+  query budgets are preserved. New borders/triangles/tape/text increase default
+  line submissions about 44% versus 1.9.8; actual game rendering cost is unverified.
 
 STATUS
   Test candidate, not validated in a real mission. Fixes a ground-segment colour

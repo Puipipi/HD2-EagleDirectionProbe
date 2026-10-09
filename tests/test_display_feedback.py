@@ -175,7 +175,7 @@ assert(M.flow_seg and #M.flow_seg>=20,'small moving ground arrows are missing')
 local static,old_casts=M.seg,casts
 local x=M.flow_seg[1][2][1]
 frames(10)
-assert(M.flow_seg[1][2][1]>x+2 and M.flow_seg[1][2][1]<x+4,
+assert(M.flow_seg[1][2][1]>x+4.5 and M.flow_seg[1][2][1]<x+5.5,
     'ground arrows must advance along the incoming heading')
 assert(M.seg==static,'animation rebuilt the complete static geometry')
 assert(casts==old_casts,'animation caused new terrain queries')

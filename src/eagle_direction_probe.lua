@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.9.8',
+    version = '1.9.9',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -81,6 +81,7 @@ local M = {
     show_sky = true,
     show_ground_border = true,
     show_ground_triangles = true,
+    show_cordon = true,
     every_frame = true,     -- submit every frame: the line does NOT persist between frames
     frame_last = nil,       -- high-resolution frame clock, for the honest timing report
     frame_peak_ms = 0,
@@ -225,13 +226,16 @@ local IMPACT_GONE_S = 1.2      -- tolerate missed queries; retire when THIS beac
 --
 -- The strip is a direction cue, not a measured ordnance footprint. Its display width
 -- is fixed; the existing wider collision grid is reused without new native calls.
-local GROUND_LANES = 4         -- two paired borders, rather than lanes across the strip
+local GROUND_LANES = 6         -- three continuous white strands on each long side
 local GROUND_TICK_M = 28       -- sparse forward chevrons
 local GROUND_TRUE_HALF_M = 10  -- warning width, not a measured damage footprint
 local GROUND_DISPLAY_HALF_M = 6 -- narrower visual band; collision grid stays unchanged
 local GROUND_LIFT_M = 0.8      -- leave breathing room over the sampled surface
 local GROUND_FLOW_HZ = 20
-local GROUND_FLOW_SPEED = 6    -- metres/second along the incoming heading
+local GROUND_FLOW_SPEED = 10   -- metres/second along the incoming heading
+local GROUND_ARROW_LENGTH_M = 5.2
+local GROUND_ARROW_HALF_WIDTH_M = 2.9
+local GROUND_BORDER_HALF_WIDTH_M = 0.25 -- 0.5 m white band, independent of aircraft position
 
 -- TERRAIN. Coarse collision grids cover the entire strip without HD2Runtime. The independent
 -- query module validates the current build/code/world/preset before invoking the BTO-evidenced
@@ -1284,9 +1288,11 @@ local function menu_tick()
         {'show_sky','天空方向箭头',true,
             '在落点附近上空显示五枚竖直的实心→箭头，带箭杆、无边界，沿来袭方向流动。按缓存地形抬升，飞机离场后消失。'},
         {'show_ground_border','地面走廊边框',true,
-            '显示贴地的白色与青色双边界。与地面三角箭头分开控制，默认开启。点击应用后保存。'},
+            '显示贴地的加粗连续白色边框。与地面三角箭头分开控制，默认开启。点击应用后保存。'},
         {'show_ground_triangles','地面走廊三角',true,
-            '显示贴地实心流动三角箭头。任一地面选项开启时显示落点菱形。天空和地面都关闭时停止地形查询。'}}
+            '显示放大的贴地实心三角箭头，与天空箭头以 10 m/s 顺向流动。任一地面选项开启时显示落点菱形。'},
+        {'show_cordon','红色全息警戒带',true,
+            '在两条长边上方显示断续红色光片与标签，短边不显示。具体类型尚未识别，暂显示 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
     local complete=true
     for _,row in ipairs(rows) do
         local key=row[1]
@@ -1321,7 +1327,7 @@ local function menu_tick()
     if complete then
         M.menu_host=host
         M.menu_status='REGISTERED'
-        log('Mod Options Menu: registered depth/air/sky/borders/triangles toggles')
+        log('Mod Options Menu: registered depth/air/sky/borders/triangles/cordon toggles')
     end
 end
 
@@ -1379,6 +1385,9 @@ end
 -- Colours are rebuilt per submission, like the vectors. Caching them was the same mistake:
 -- sr.Color allocates in the temp arena too, and this mod restores that arena every frame.
 local function colour(kind)
+    if kind=='cordon_text' then return sr.Color(245,255,160,150) end
+    if kind=='cordon' then return sr.Color(195+12*math.sin(os.clock()*1.6),255,40,60) end
+    if kind=='cordon_dim' then return sr.Color(65,255,30,50) end
     if kind == 'marker' then return sr.Color(255, 255, 210, 90) end
     if kind == 'flow' then return sr.Color(235, 230, 255, 255) end
     local index=tonumber(kind:match('^sky(%d)$'))
@@ -1748,7 +1757,7 @@ end
 -- have their own cache, independent of the fast moving aircraft indicator.
 local function ground_geometry_key()
     local parts={'g'..tostring(M.ground_revision or 0),tostring(M.show_ground_border),
-        tostring(M.show_ground_triangles)}
+        tostring(M.show_ground_triangles),tostring(M.show_cordon)}
     for id,imp in pairs(M.impacts) do
         local h=imp.heading
         parts[#parts+1]=string.format('%s:%.1f,%.1f,%.1f:%s',tostring(id),
@@ -1826,25 +1835,83 @@ local function build_geometry(ground_key)
         local steps = math.max(1, math.ceil((2 * GROUND_HALF_M) / GROUND_SEG_M))
 
         if M.show_ground_border then
-        -- Paired borders: cyan outer edge and white inner edge on each side.
-        local gap = math.max(0.3, half * 0.06)
-        local offsets = { -half, -half + gap, half - gap, half }
-        for i = 0, GROUND_LANES - 1 do
-            local o = offsets[i + 1]
-            local kind = (i == 0 or i == GROUND_LANES - 1) and 'holo' or c
-            local prev = nil
-            for k = 0, steps do
-                local t = -GROUND_HALF_M + (2 * GROUND_HALF_M) * (k / steps)
-                local v = at(t, o)
-                if prev ~= nil then stroke(kind, prev, v, 1) end
-                prev = v
+            -- Solid white bands: every strand is continuous, with fixed world width.
+            -- Reusing each endpoint also avoids small mismatches at terrain grid joins.
+            for _,side in ipairs({-1,1}) do
+                for lane=-1,1 do
+                    local o=side*half+lane*GROUND_BORDER_HALF_WIDTH_M
+                    local prev=nil
+                    for k=0,steps do
+                        local t=-GROUND_HALF_M+2*GROUND_HALF_M*k/steps
+                        local v=at(t,o)
+                        if prev and v then seg[#seg+1]={c,prev,v} end
+                        prev=v
+                    end
+                end
+                -- White short caps remain on the ground; no upright red end wall.
+                for lane=0,2 do
+                    local t=side*(GROUND_HALF_M-lane*GROUND_BORDER_HALF_WIDTH_M)
+                    stroke(c,at(t,-half),at(t,half),1)
+                end
+                if M.show_cordon then
+                    local o=side*half
+                    local function tape_at(t,up)
+                        local p=at(t,o)
+                        if p then p[3]=p[3]+up end
+                        return p
+                    end
+                    -- Spaced low light panels, with generous open gaps. No diagonal
+                    -- wire hatching. Each half samples the existing terrain cache.
+                    local function panel_line(kind,t0,z0,t1,z1)
+                        local a,b=tape_at(t0,z0),tape_at(t1,z1)
+                        if a and b then seg[#seg+1]={kind,a,b} end
+                    end
+                    for center=-90,90,30 do
+                        local label_panel=center==0
+                        local extent=label_panel and 3 or 5
+                        local rows=label_panel and 8 or 5
+                        local height=label_panel and 1 or 0.6
+                        for row=0,rows do
+                            local up=0.3+height*row/rows
+                            -- Only the lower baseline is bright; dim scan rows give
+                            -- the interior its transparent, lightweight appearance.
+                            local kind=row==0 and 'cordon' or 'cordon_dim'
+                            panel_line(kind,center-extent,up,center,up)
+                            panel_line(kind,center,up,center+extent,up)
+                        end
+                        -- One short upper corner catches the eye without boxing in
+                        -- the whole panel; the bright baseline anchors its bottom.
+                        panel_line('cordon',center-extent,0.3+height,center-extent+0.85,0.3+height)
+                        panel_line('cordon',center-extent,0.3+height,center-extent,0.3+height-0.2)
+                    end
+                    -- Cached world-space stroke lettering uses only LineObject.
+                    -- No verified per-beacon stratagem ID exists yet: never guess a
+                    -- teammate's type from local menu selection or shared munitions.
+                    local strokes={
+                        {0,1,0.6,1},{0,1,0,0.5},{0.6,1,0.6,0.5},
+                        {0,0.5,0.6,0.5},{0,0.5,0,0},{0.6,0.5,0.6,0},
+                        {0,0,0.6,0},{0.3,0.5,0.3,0.2},{0.28,0.02,0.32,0.02},
+                    }
+                    local glyphs={E={1,2,4,5,7},A={1,2,3,4,5,6},
+                        G={1,2,4,5,6,7},L={2,5,7},['?']={1,3,4,8,9}}
+                    local text='EAGLE ?'
+                    local pitch,height=0.56,0.7
+                    local width=(#text-1)*pitch+0.42
+                    for i=1,#text do
+                        local glyph=glyphs[text:sub(i,i)]
+                        if glyph then
+                            for _,index in ipairs(glyph) do
+                                local s=strokes[index]
+                                -- Reverse the horizontal axis on the opposite edge
+                                -- so letters read normally when viewed from outside.
+                                local a=tape_at(-side*(-width/2+(i-1)*pitch+s[1]*height),0.55+s[2]*height)
+                                local b=tape_at(-side*(-width/2+(i-1)*pitch+s[3]*height),0.55+s[4]*height)
+                                if a and b then seg[#seg+1]={'cordon_text',a,b} end
+                            end
+                        end
+                    end
+                end
             end
-        end
-
-        -- All direction heads travel in the separate motion cache; only edges/caps
-        -- and the small amber landing cue stay here.
-        stroke('holo', at(-GROUND_HALF_M, -half), at(-GROUND_HALF_M, half),1)
-        stroke('holo', at(GROUND_HALF_M, -half), at(GROUND_HALF_M, half),1)
         end
         -- Compact filled upright diamond, 2.8 m tall / 2.8 m wide. Two filled
         -- planes retain a silhouette from either side without a giant ground stamp.
@@ -1919,8 +1986,9 @@ local function ground_flow()
             if M.show_ground_triangles then
             for t=-GROUND_HALF_M+phase,GROUND_HALF_M-2,GROUND_TICK_M do
                 -- Keep the amber landing point clear. Entire arrows stay inside the band.
-                if t>=-GROUND_HALF_M+4 and math.abs(t)>8 then
-                    local tip,left,right=at(t,0),at(t-4,-2.2),at(t-4,2.2)
+                if t>=-GROUND_HALF_M+GROUND_ARROW_LENGTH_M and math.abs(t)>8 then
+                    local tip,left,right=at(t,0),at(t-GROUND_ARROW_LENGTH_M,-GROUND_ARROW_HALF_WIDTH_M),
+                        at(t-GROUND_ARROW_LENGTH_M,GROUND_ARROW_HALF_WIDTH_M)
                     if tip and left and right then
                         add_filled_triangle(seg,tip,left,right,'flow',0.12,function(x,y)
                             return ground_surface_z(imp,x,y)
@@ -1998,7 +2066,8 @@ local function submit_geometry()
     -- The engine objects are built HERE, in the frame that dispatches them, and never cached:
     -- they live in the script temp arena, which this mod restores at the end of every frame.
     local colors = { air = colour('air'), ground = colour('ground'),
-        holo = colour('holo'), trail = colour('trail'), marker = colour('marker'),flow=colour('flow') }
+        holo = colour('holo'), trail = colour('trail'), marker = colour('marker'),flow=colour('flow'),
+        cordon=colour('cordon'),cordon_dim=colour('cordon_dim'),cordon_text=colour('cordon_text') }
     for i=1,5 do colors['sky'..i]=colour('sky'..i) end
     colors.sky_edge=colour('sky_edge')
     local flow=not M.selftest and ground_flow() or {}
