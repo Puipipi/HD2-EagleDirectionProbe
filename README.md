@@ -4,7 +4,21 @@
 
 [下载 GitHub Release 安装包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/latest)
 
-## 当前测试版：1.10.0-rc4 真面边带与固定带字全息光片（2026-10-09）
+## 当前测试版：1.10.0-rc5 首次显示前确认战备范围（2026-10-09）
+
+[下载 rc5 测试包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/tag/v1.10.0-rc5)，
+或手动导入 `dist/HD2-EagleDirectionProbe-1.10.0-rc5.zip`。
+
+修复正常召唤时先闪现默认走廊、随后才变成具体战备范围的显示顺序：
+类型识别提前到原有落地稳定阶段，仍使用 5 Hz 双次唯一匹配。
+若首次确认尚未完成，范围边框、地面三角和光片最多等待 0.45 秒；
+落点、飞机与天空箭头继续显示。读取失败立即回退，空结果/歧义有界回退，
+极晚才出现的记录仍可能后续适应。关闭自适应范围不等待。
+
+179 项离线测试通过；保留 rc4 外观、配置、性能优化及原生地形资源。
+无自动部署。详情见 [首次显示修复](docs/initial-type-display-1.10.0-rc5.md)。
+
+## 上个测试版：1.10.0-rc4 真面边带与固定带字全息光片（2026-10-09）
 
 [下载 rc4 测试包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/tag/v1.10.0-rc4)，
 或手动导入 `dist/HD2-EagleDirectionProbe-1.10.0-rc4.zip`。沿用 GUID，没有自动部署。

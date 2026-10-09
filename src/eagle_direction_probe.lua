@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc4',
+    version = '1.10.0-rc5',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -1052,6 +1052,9 @@ local function sample_body()
         if p and rec == nil then
             beacon_motion[entry.unit] = { p = p, t = now }
         elseif p then
+            if not rec.settled and now-(rec.last_seen or rec.t or now)>0.75 then
+                rec.type_candidate,rec.settle_since=nil,nil
+            end
             local dt = now - (rec.t or now)
             local dx, dy, dz = p[1] - rec.p[1], p[2] - rec.p[2], p[3] - rec.p[3]
             local speed = dt > 0 and (math.sqrt(dx * dx + dy * dy + dz * dz) / dt) or 0
@@ -1072,6 +1075,7 @@ local function sample_body()
                     log(string.format('strip %d withdrawn: beacon resumed flight',rec.strike_id))
                 end
                 rec.thrown = true
+                rec.type_candidate=nil
                 rec.guide_born,rec.recover_until=nil,nil
                 rec.settled = nil
                 rec.settle_since = nil
@@ -1080,6 +1084,7 @@ local function sample_body()
                 if now-rec.settle_since>=0.35 then rec.settled=now end
             elseif not rec.settled then
                 rec.settle_since=nil
+                rec.type_candidate=nil
             end
             rec.p, rec.t = p, now
         end
@@ -1112,6 +1117,12 @@ local function sample_body()
                 local heading, aircraft = nearest_heading(p)
                 imp = { p = { p[1], p[2], p[3] }, heading = heading, aircraft = aircraft,
                     t = now, born = rec.guide_born or now, beacon = entry.unit, last_seen = now }
+                local candidate=rec.type_candidate
+                if candidate then
+                    imp.stratagem_type,imp.type_pending,imp.type_epoch=
+                        candidate.stratagem_type,candidate.type_pending,candidate.type_epoch
+                    rec.type_candidate=nil
+                end
                 rec.guide_born=imp.born
                 M.impacts[rec.strike_id] = imp
                 log(string.format('strip %d landed: beacon=%s position=%.1f,%.1f,%.1f',
@@ -1294,7 +1305,7 @@ local function menu_tick()
         {'show_type','具体飞鹰名称（测试）',true,
             '独立只读识别活跃战备；连续两次唯一位置匹配才显示名称，歧义保留 EAGLE ?。标签随光片移动。无需 Runtime。应用后保存。'},
         {'adapt_range','按战备调整参考范围（测试）',true,
-            '唯一识别后调整参考边界：扫射为前向窄带，区域空袭为不同长宽，500kg 为半径25m参考圆。REF 不是精确伤害或安全边界；110mm目标未知，仍仅指方向。应用后保存。'},
+            '落地稳定期提前识别；首次范围最多等待0.45秒确认，失败仍显示通用指引。扫射为前向窄带，区域空袭为不同长宽，500kg 为半径25m参考圆。REF 不是精确伤害或安全边界；110mm目标未知，仍仅指方向。应用后保存。'},
         {'solid_fill','真正面填充（测试）',true,
             '用真实三角面填充箭头、落点菱形、白色边带、光片及文字。默认开启；关闭恢复线段填充；开启透视时自动使用线段。点击应用后保存。'},
         {'through_world','透视显示',false,
@@ -1639,16 +1650,44 @@ local function type_label(imp)
     local def=M.show_type and M.type_profiles and M.type_profiles.catalog[imp.stratagem_type]
     return def and def.tag or 'EAGLE ?'
 end
+local function initial_type_display(now)
+    for id,imp in pairs(M.impacts) do
+        imp.type_display_started=imp.type_display_started or now
+        -- Await the conservative second match briefly, rather than flashing a
+        -- generic footprint. Aircraft/sky/landing point remain visible meanwhile.
+        local waiting=M.adapt_range and not imp.stratagem_type and M.type_provider~=nil
+            and M.type_status=='READY' and now-imp.type_display_started<0.45
+        if waiting~=imp.type_display_wait then
+            imp.type_display_wait=waiting
+            M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil
+        end
+        M.type_labels[id]=type_label(imp)
+    end
+end
 local function type_tick(world,now)
-    -- Only 5 Hz, only with live guides; all display geometry remains plain Lua.
+    -- Start during the existing 0.35 s beacon-settling window. Native polling
+    -- stays at 5 Hz; a fresh throw/bounce discards its provisional candidate.
     M.type_labels={}
-    for id,imp in pairs(M.impacts) do M.type_labels[id]=type_label(imp) end
-    if next(M.impacts)==nil or (not M.show_type and not M.adapt_range)
-        or now<(M.type_next or 0) then return end
+    local targets={}
+    for id,imp in pairs(M.impacts) do targets[id]=imp end
+    for _,rec in pairs(beacon_motion) do
+        if not rec.settled and now-(rec.last_seen or rec.t or 0)>0.75 then
+            rec.type_candidate,rec.settle_since=nil,nil
+        end
+        if rec.strike_id and rec.thrown and rec.settle_since and not rec.settled
+            and not rec.retired and now-(rec.last_seen or rec.t or 0)<=0.75
+            and not targets[rec.strike_id] then
+            rec.type_candidate=rec.type_candidate or {}
+            rec.type_candidate.p=rec.p
+            targets[rec.strike_id]=rec.type_candidate
+        end
+    end
+    if next(targets)==nil or (not M.show_type and not M.adapt_range)
+        or now<(M.type_next or 0) then initial_type_display(now);return end
     M.type_next=now+0.2
     if M.type_world~=world then
         M.type_world,M.type_provider,M.type_epoch=world,nil,nil
-        for _,imp in pairs(M.impacts) do imp.stratagem_type,imp.type_pending,imp.type_epoch=nil,nil,nil end
+        for _,imp in pairs(targets) do imp.stratagem_type,imp.type_pending,imp.type_epoch=nil,nil,nil end
     end
     if not M.type_provider and now>=(M.type_retry_at or 0) then
         local ok,provider=pcall(function()
@@ -1658,7 +1697,7 @@ local function type_tick(world,now)
         if ok and type(provider)=='table' then M.type_provider=provider
         else M.type_status='UNAVAILABLE: '..tostring(provider):sub(1,140);M.type_retry_at=now+5 end
     end
-    if not M.type_provider then return end
+    if not M.type_provider then initial_type_display(now);return end
     local began=clock_ms()
     local ok,rows,status,epoch=pcall(M.type_provider.snapshot,M.type_provider,sr,world)
     M.type_reads=(M.type_reads or 0)+1
@@ -1669,7 +1708,7 @@ local function type_tick(world,now)
     if status=='NOT_MISSION' then epoch='not-mission' end
     if epoch then M.type_epoch=tostring(world)..':'..epoch end
     if M.type_profiles then
-        local changed=M.type_profiles.associate(M.impacts,rows,now,M.type_epoch or tostring(world))
+        local changed=M.type_profiles.associate(targets,rows,now,M.type_epoch or tostring(world))
         if changed>0 then M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil end
         for id,imp in pairs(M.impacts) do
             M.type_labels[id]=type_label(imp)
@@ -1682,6 +1721,7 @@ local function type_tick(world,now)
         end
     end
     if rows==nil then M.type_provider=nil;M.type_retry_at=now+5 end
+    initial_type_display(now)
     if M.type_status~=M.type_logged then
         M.type_logged=M.type_status
         log('stratagem reader: '..tostring(M.type_status))
@@ -1772,7 +1812,7 @@ local function terrain_tick()
     end
     local calls={}
     for call,imp in pairs(M.impacts) do
-        if collision_grid(imp) then calls[#calls+1]=call end
+        if not imp.type_display_wait and collision_grid(imp) then calls[#calls+1]=call end
     end
     table.sort(calls)
     if #calls==0 then return end
@@ -1902,7 +1942,7 @@ local function ground_geometry_key()
         local h=imp.heading
         parts[#parts+1]=string.format('%s:%.1f,%.1f,%.1f:%s:%s',tostring(id),
             imp.p[1],imp.p[2],imp.p[3],h and string.format('%.2f,%.2f',h[1],h[2]) or '-',
-            tostring(imp.stratagem_type))
+            tostring(imp.stratagem_type)..':'..tostring(imp.type_display_wait))
     end
     table.sort(parts)
     return table.concat(parts,'|')
@@ -1976,7 +2016,7 @@ local function build_geometry(ground_key)
 
         local steps = math.max(1, math.ceil((bounds.hi-bounds.lo) / GROUND_SEG_M))
 
-        if M.show_ground_border then
+        if M.show_ground_border and not impact.type_display_wait then
             if M.solid_active then
                 local w=GROUND_BORDER_HALF_WIDTH_M
                 if bounds.shape=='circle' then
@@ -2265,7 +2305,7 @@ local function ground_flow()
                 local z=ground_surface_z(imp,x,y)
                 return z and {x,y,z+GROUND_LIFT_M} or nil
             end
-            if M.show_ground_triangles then
+            if M.show_ground_triangles and not imp.type_display_wait then
             -- Short reference footprints need tighter spacing to avoid empty animation phases.
             -- Speed remains distance/time; only the wrap period and spacing change.
             local spacing=math.min(GROUND_TICK_M,(bounds.hi-bounds.lo)/3)
@@ -2284,7 +2324,7 @@ local function ground_flow()
             end
             end
             if M.show_sky then add_sky_corridor(seg,imp,phase) end
-            if cordon then add_cordon_panels(seg,imp,hx,hy,distance) end
+            if cordon and not imp.type_display_wait then add_cordon_panels(seg,imp,hx,hy,distance) end
         end
     end
     M.flow_seg,M.flow_key=seg,key

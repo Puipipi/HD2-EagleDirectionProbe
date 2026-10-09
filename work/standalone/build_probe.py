@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc4'
+VERSION = '1.10.0-rc5'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -75,9 +75,16 @@ WHAT THIS IS
   Whole panels and attached names move forward at 10 m/s, using the 20 Hz cache.
   White borders/landing diamond stay static. No extra collision queries are made.
   EXPERIMENTAL TYPES: independent bounded active-record snapshots at 5 Hz with
-  live guides. Two consecutive unique ball/record position matches identify a
+  live guides or a freshly thrown beacon in its existing settling window.
+  Two consecutive unique ball/record position matches identify a
   candidate among eight Eagle types. Ambiguity keeps EAGLE ?. No Runtime needed.
   Aircraft direction and retirement still use actual flight tracking.
+  RC5 starts matching before the settled guide is created. Fresh range geometry
+  can await confirmation for at most 0.45 s; air/sky/landing cues remain visible.
+  A failed reader or disabled adaptive ranges use generic geometry immediately.
+  Empty/ambiguous results fall back after the bounded wait. Very late native
+  records may still adapt later. Lost provisional beacons expire after 0.75 s
+  and must settle/match afresh. A new throw never inherits a previous candidate.
   REF labels identify estimated reference footprints. Multi-bomb strips change
   length/width by type; strafe extends forward, 500kg uses a 25 m reference circle.
   These are NOT measured damage/safe boundaries. 110mm target remains unknown:
