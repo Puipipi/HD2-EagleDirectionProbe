@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc7',
+    version = '1.10.0-rc8',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -81,6 +81,7 @@ local M = {
     show_sky = true,
     show_ground_border = true,
     show_ground_triangles = true,
+    show_ground_area = false,
     ground_lift_cm = 8,
     show_cordon = true,
     solid_fill = true,      -- experimental retained world triangles; saved MOM switch
@@ -1329,9 +1330,11 @@ local function menu_tick()
         {'show_ground_border','地面走廊边框',true,
             '显示贴地的0.5米连续白色面带（真填充开启时）；线段模式使用加粗边框。与地面三角箭头分开控制，默认开启。点击应用后保存。'},
         {'show_ground_triangles','地面走廊三角',true,
-            '显示放大的贴地实心三角箭头，与天空箭头以 10 m/s 顺向流动。任一地面选项开启时显示落点菱形。'},
+            '显示放大的贴地实心三角箭头，与天空箭头以 10 m/s 顺向流动。边框或三角开启时显示落点菱形。'},
+        {'show_ground_area','地面红色范围光幕（测试）',false,
+            '在已识别战备的参考范围内覆盖淡红色贴地三角面，不是真实投影灯光。默认关闭，可独立开启；需要按战备调整范围、真正面填充且关闭透视。只复用碰撞地形缓存，未知地面留空，随指引退场。未知类型及110mm不铺面积。REF 不是精确伤害或安全边界。点击应用后保存。'},
         {'ground_lift_cm','地面指引离地高度（厘米）',8,
-            '调整走廊边框和地面三角高于缓存地形的距离：0～100厘米，每格1厘米，默认8厘米。0可能与地表闪烁；不影响天空箭头、光片和落点菱形。点击应用后生效并保存。',
+            '调整走廊边框和地面三角高于缓存地形的距离：0～100厘米，每格1厘米，默认8厘米。红色光幕比箭头低2厘米，最低0厘米。0可能与地表闪烁；不影响天空箭头、光片和落点菱形。点击应用后生效并保存。',
             'slider',0,100,1},
         {'show_cordon','红色全息警戒带',true,
             '等尺寸切角红色薄光片，每片固定带字，以 10 m/s 移动，直带仅在长边；参考圆沿周界移动。名称唯一识别后显示，否则 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
@@ -1450,6 +1453,7 @@ end
 -- are constructed only for work submitted in the current frame: sr.Color and
 -- sr.Vector3 use the temp arena that this mod restores at every frame's end.
 local function colour(kind)
+    if kind=='area' then return sr.Color(36,255,32,40) end
     if kind=='cordon_text' then return sr.Color(255,255,225,215) end
     if kind=='cordon' then return sr.Color(255,255,55,65) end
     if kind=='cordon_dim' then return sr.Color(255,68,8,16) end
@@ -1800,7 +1804,8 @@ local function collision_height(imp,x,y)
 end
 
 local function terrain_tick()
-    if not M.show_ground_border and not M.show_ground_triangles and not M.show_sky then return end
+    if not M.show_ground_border and not M.show_ground_triangles and not M.show_sky
+        and not (M.show_ground_area and M.solid_active) then return end
     local now=os.clock()
     if now<(M.terrain_retry_at or 0) or next(M.impacts)==nil then return end
     local world=main_world()
@@ -1949,6 +1954,7 @@ end
 -- have their own cache, independent of the fast moving aircraft indicator.
 local function ground_geometry_key()
     local parts={'g'..tostring(M.ground_revision or 0),tostring(M.show_ground_border),
+        tostring(M.show_ground_area),tostring(M.terrain_active),
         tostring(M.ground_lift_cm),
         tostring(M.show_ground_triangles),tostring(M.show_cordon),tostring(M.solid_active),
         tostring(M.show_type),tostring(M.adapt_range)}
@@ -2020,15 +2026,60 @@ local function build_geometry(ground_key)
         -- A point on the strip, with its height taken from the terrain samples rather than
         -- from the impact's own height. Subdividing is what lets the strip bend with the
         -- ground; a single straight segment per lane can only ever be flat.
-        local function at(t, o)
+        local function at(t, o, lift)
             local x = imp[1] + hx * t + px * o
             local y = imp[2] + hy * t + py * o
             local z=surface_z(x,y)
             if z==nil then return nil end
-            return { x, y, z + GROUND_LIFT_M }
+            return { x, y, z + (lift or GROUND_LIFT_M) }
         end
 
         local steps = math.max(1, math.ceil((bounds.hi-bounds.lo) / GROUND_SEG_M))
+
+        -- Optional static reference fill. Only known collision heights are suitable
+        -- for a broad translucent surface: never bridge missing hits with beacon Z.
+        -- Kept below white cues, retained with the ground batch, and not animated.
+        if M.show_ground_area and M.solid_active and bounds.estimated and bounds.shape~='direction'
+            and not impact.type_display_wait
+            and M.terrain_active and impact.terrain then
+            local lift=math.max(0,GROUND_LIFT_M-0.02)
+            if bounds.shape=='circle' then
+                local sectors,rings=24,math.max(1,math.ceil(bounds.radius/GROUND_SEG_M))
+                local previous={}
+                local center=at(0,0,lift)
+                for ring=1,rings do
+                    local current={}
+                    local radius=bounds.radius*ring/rings
+                    for k=1,sectors do
+                        local angle=(k-1)*math.pi*2/sectors
+                        current[k]=at(radius*math.cos(angle),radius*math.sin(angle),lift)
+                    end
+                    for k=1,sectors do
+                        local j=k%sectors+1
+                        if ring==1 then
+                            if center and current[k] and current[j] then
+                                seg[#seg+1]={'area',center,current[k],current[j]}
+                            end
+                        else
+                            add_quad(seg,previous[k],current[k],current[j],previous[j],'area')
+                        end
+                    end
+                    previous=current
+                end
+            else
+                local across=math.max(2,math.ceil(2*half/GROUND_SEG_M))
+                local previous={}
+                for k=0,steps do
+                    local current={}
+                    local t=bounds.lo+(bounds.hi-bounds.lo)*k/steps
+                    for j=0,across do current[j+1]=at(t,-half+2*half*j/across,lift) end
+                    if k>0 then for j=1,across do
+                        add_quad(seg,previous[j],current[j],current[j+1],previous[j+1],'area')
+                    end end
+                    previous=current
+                end
+            end
+        end
 
         if M.show_ground_border and not impact.type_display_wait then
             if M.solid_active then
@@ -2096,13 +2147,15 @@ local function build_geometry(ground_key)
         end
         -- Compact filled upright diamond, 2.8 m tall / 2.8 m wide. Two filled
         -- planes retain a silhouette from either side without a giant ground stamp.
-        local center = {imp[1],imp[2],imp[3]+UPRIGHT_BASE_LIFT_M}
-        for _, axis in ipairs({{hx, hy}, {px, py}}) do
-            local top={center[1],center[2],center[3]+2.8}
-            local left={center[1]-axis[1]*1.4,center[2]-axis[2]*1.4,center[3]+1.4}
-            local right={center[1]+axis[1]*1.4,center[2]+axis[2]*1.4,center[3]+1.4}
-            add_filled_triangle(seg,top,left,right,'marker',0.07)
-            add_filled_triangle(seg,center,left,right,'marker',0.07)
+        if M.show_ground_border or M.show_ground_triangles then
+            local center = {imp[1],imp[2],imp[3]+UPRIGHT_BASE_LIFT_M}
+            for _, axis in ipairs({{hx, hy}, {px, py}}) do
+                local top={center[1],center[2],center[3]+2.8}
+                local left={center[1]-axis[1]*1.4,center[2]-axis[2]*1.4,center[3]+1.4}
+                local right={center[1]+axis[1]*1.4,center[2]+axis[2]*1.4,center[3]+1.4}
+                add_filled_triangle(seg,top,left,right,'marker',0.07)
+                add_filled_triangle(seg,center,left,right,'marker',0.07)
+            end
         end
     end
 
@@ -2129,7 +2182,8 @@ local function build_geometry(ground_key)
         local aircraft_seg=seg
         seg={}
         for _, imp in pairs(M.impacts) do
-            if imp.heading and (M.show_ground_border or M.show_ground_triangles) then
+            if imp.heading and (M.show_ground_border or M.show_ground_triangles
+                or (M.show_ground_area and M.solid_active)) then
                 add_strip(imp, imp.heading)
             end
         end
@@ -2441,6 +2495,7 @@ local function frame_colors()
         cordon=colour('cordon'),cordon_dim=colour('cordon_dim'),cordon_text=colour('cordon_text') }
     for i=1,5 do colors['sky'..i]=colour('sky'..i) end
     colors.sky_edge=colour('sky_edge')
+    if M.show_ground_area and M.solid_active then colors.area=colour('area') end
     return colors
 end
 

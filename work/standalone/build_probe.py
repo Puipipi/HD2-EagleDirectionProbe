@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc7'
+VERSION = '1.10.0-rc8'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -82,6 +82,17 @@ WHAT THIS IS
   cached terrain by 0.08 m instead of 0.8 m; upright plates/diamond keep their old
   elevations. Coarse interpolation may still differ on uneven terrain.
   No extra collision queries are made.
+  RC8 OPTIONAL GROUND AREA: MOM 地面红色范围光幕（测试） defaults OFF.
+  Enable it together with adaptive reference ranges and true fill; see-through
+  must be OFF. It adds a faint red translucent mesh inside an identified reference
+  footprint, using the existing collision-height cache. This is an overlay, not
+  a projected light or illumination of rocks/characters. Unknown types, 110mm,
+  unavailable terrain and unsampled/missed cells have no red area.
+  Rectangle cells and a subdivided 500kg disc stay static with the retained GUI.
+  No scan-line fallback, extra raycasts or alpha animation. It retires with the guide.
+  The existing ground-height slider also moves this area, 2 cm below arrows
+  (minimum zero clearance). Turning it on adds retained triangles / GPU work;
+  offline CPU timings do not measure game FPS or transparent-surface GPU cost.
   EXPERIMENTAL TYPES: independent bounded active-record snapshots at 5 Hz with
   live guides or a freshly thrown beacon in its existing settling window.
   Two consecutive unique ball/record position matches identify a

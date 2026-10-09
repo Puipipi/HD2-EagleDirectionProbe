@@ -1,0 +1,187 @@
+{
+  "note": "Offline Lua CPU/allocation only; native renderer is fake, not game FPS or GPU cost.",
+  "frames": 1120,
+  "repeats": 5,
+  "scenes": {
+    "airstrike_1": {
+      "off": {
+        "ms_per_frame": 0.0382,
+        "allocated_kb_per_frame": 33.0876,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 176.3125,
+        "vectors_per_frame": 265.642,
+        "colors_per_frame": 4.2857,
+        "face_creates": 876,
+        "active_faces": 1054,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "on": {
+        "ms_per_frame": 0.0378,
+        "allocated_kb_per_frame": 33.2803,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 176.3125,
+        "vectors_per_frame": 265.642,
+        "colors_per_frame": 4.5714,
+        "face_creates": 876,
+        "active_faces": 1150,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    },
+    "airstrike_4": {
+      "off": {
+        "ms_per_frame": 0.1257,
+        "allocated_kb_per_frame": 125.5817,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 705.25,
+        "vectors_per_frame": 1062.5679,
+        "colors_per_frame": 4.2857,
+        "face_creates": 3504,
+        "active_faces": 4216,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "on": {
+        "ms_per_frame": 0.1342,
+        "allocated_kb_per_frame": 126.1958,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 705.25,
+        "vectors_per_frame": 1062.5679,
+        "colors_per_frame": 4.5714,
+        "face_creates": 3504,
+        "active_faces": 4600,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    },
+    "airstrike_8": {
+      "off": {
+        "ms_per_frame": 0.2666,
+        "allocated_kb_per_frame": 249.0345,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 1410.5,
+        "vectors_per_frame": 2125.1357,
+        "colors_per_frame": 4.2857,
+        "face_creates": 7008,
+        "active_faces": 8432,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "on": {
+        "ms_per_frame": 0.2769,
+        "allocated_kb_per_frame": 250.2235,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 1410.5,
+        "vectors_per_frame": 2125.1357,
+        "colors_per_frame": 4.5714,
+        "face_creates": 7008,
+        "active_faces": 9200,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    },
+    "500kg_1": {
+      "off": {
+        "ms_per_frame": 0.0293,
+        "allocated_kb_per_frame": 25.1769,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 125.325,
+        "vectors_per_frame": 188.9571,
+        "colors_per_frame": 4.2857,
+        "face_creates": 724,
+        "active_faces": 922,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "on": {
+        "ms_per_frame": 0.0309,
+        "allocated_kb_per_frame": 25.364,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 125.325,
+        "vectors_per_frame": 188.9571,
+        "colors_per_frame": 4.5714,
+        "face_creates": 724,
+        "active_faces": 1162,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    },
+    "500kg_4": {
+      "off": {
+        "ms_per_frame": 0.104,
+        "allocated_kb_per_frame": 93.9014,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 501.3,
+        "vectors_per_frame": 755.8286,
+        "colors_per_frame": 4.2857,
+        "face_creates": 2896,
+        "active_faces": 3688,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "on": {
+        "ms_per_frame": 0.105,
+        "allocated_kb_per_frame": 94.5136,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 501.3,
+        "vectors_per_frame": 755.8286,
+        "colors_per_frame": 4.5714,
+        "face_creates": 2896,
+        "active_faces": 4648,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    },
+    "500kg_8": {
+      "off": {
+        "ms_per_frame": 0.2033,
+        "allocated_kb_per_frame": 185.6711,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 1002.6,
+        "vectors_per_frame": 1511.6571,
+        "colors_per_frame": 4.2857,
+        "face_creates": 5792,
+        "active_faces": 7376,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "on": {
+        "ms_per_frame": 0.2014,
+        "allocated_kb_per_frame": 186.8576,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 1002.6,
+        "vectors_per_frame": 1511.6571,
+        "colors_per_frame": 4.5714,
+        "face_creates": 5792,
+        "active_faces": 9296,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    }
+  }
+}
