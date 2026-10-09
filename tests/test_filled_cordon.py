@@ -40,7 +40,7 @@ for frame=0,119 do
         if p and r[1]<=p[2]+0.001 then p[2]=math.max(p[2],r[2])
         else panels[#panels+1]={r[1],r[2]} end
     end
-    assert(#panels>=2,'too few moving nameplates')
+    assert(#panels>=1 and #panels<=2,'opaque plates should leave wide gaps without a blank side')
     local width=panels[1][2]-panels[1][1]
     for _,p in ipairs(panels) do
         assert(math.abs(p[2]-p[1]-width)<0.001,'label handoff changed a panel length')
@@ -49,7 +49,7 @@ for frame=0,119 do
             if s[1]=='cordon_text' and s[2][2]<0 and s[2][1]>=p[1] and s[2][1]<=p[2] then
                 letters=letters+1
                 assert(s[4],'name still relies on thin native line strokes')
-                assert(math.abs(s[2][2])>6.01,'letters are coplanar with panel wash')
+                assert(math.abs(math.abs(s[2][2])-6)>0.01,'letters are coplanar with panel wash')
             end
         end
         assert(letters>0,'a distant/outer moving panel has no persistent name')
@@ -68,7 +68,7 @@ for _,s in ipairs(M.seg) do if s[1]=='ground' then
     n=n+1
     local a,b,c=s[2],s[3],s[4]
     area=area+math.abs((b[1]-a[1])*(c[2]-a[2])-(b[2]-a[2])*(c[1]-a[1]))/2
-    for k=2,4 do assert(math.abs(s[k][3]-0.8)<0.001,'border left cached surface') end
+    for k=2,4 do assert(math.abs(s[k][3]-0.08)<0.001,'border left cached surface') end
 end end
 assert(n>=96 and area>78 and area<79,'annulus lost its filled area')
 assert(max_frame<=2 and casts<=85)

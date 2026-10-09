@@ -1,0 +1,98 @@
+{
+  "note": "Offline Lua CPU/allocation only; native renderer is fake, not game FPS.",
+  "baseline": "v1.10.0-rc5",
+  "frames": 1120,
+  "repeats": 7,
+  "scenes": {
+    "1": {
+      "baseline": {
+        "ms_per_frame": 0.0436,
+        "allocated_kb_per_frame": 34.4316,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 192.0268,
+        "vectors_per_frame": 578.6411,
+        "colors_per_frame": 15.0,
+        "face_creates": 956,
+        "active_faces": 1134,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "current": {
+        "ms_per_frame": 0.0326,
+        "allocated_kb_per_frame": 33.0057,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 176.3125,
+        "vectors_per_frame": 265.642,
+        "colors_per_frame": 4.2857,
+        "face_creates": 876,
+        "active_faces": 1054,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    },
+    "4": {
+      "baseline": {
+        "ms_per_frame": 0.1656,
+        "allocated_kb_per_frame": 125.766,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 768.1071,
+        "vectors_per_frame": 2314.5643,
+        "colors_per_frame": 15.0,
+        "face_creates": 3824,
+        "active_faces": 4536,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "current": {
+        "ms_per_frame": 0.1249,
+        "allocated_kb_per_frame": 125.5543,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 705.25,
+        "vectors_per_frame": 1062.5679,
+        "colors_per_frame": 4.2857,
+        "face_creates": 3504,
+        "active_faces": 4216,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    },
+    "8": {
+      "baseline": {
+        "ms_per_frame": 0.3299,
+        "allocated_kb_per_frame": 247.4743,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 1536.2143,
+        "vectors_per_frame": 4629.1286,
+        "colors_per_frame": 15.0,
+        "face_creates": 7648,
+        "active_faces": 9072,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "current": {
+        "ms_per_frame": 0.2639,
+        "allocated_kb_per_frame": 248.8826,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 1410.5,
+        "vectors_per_frame": 2125.1357,
+        "colors_per_frame": 4.2857,
+        "face_creates": 7008,
+        "active_faces": 8432,
+        "solid_active": 1,
+        "type_snapshots": 40,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    }
+  }
+}

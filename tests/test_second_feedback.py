@@ -78,7 +78,7 @@ for _, s in ipairs(M.seg or {}) do
             local x, y, z = s[k][1], s[k][2], s[k][3]
             if x >= 0 and y >= 0 and x + y <= 100 and z < 40 then
                 n = n + 1
-                assert(math.abs(z - (0.2*x + 0.1*y + 0.8)) < 0.15,
+                assert(math.abs(z - (0.2*x + 0.1*y + 0.08)) < 0.15,
                     'known slope was flattened instead of followed')
             end
         end

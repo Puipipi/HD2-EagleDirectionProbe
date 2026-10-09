@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc5',
+    version = '1.10.0-rc6',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -237,7 +237,8 @@ local GROUND_LANES = 6         -- three continuous white strands on each long si
 local GROUND_TICK_M = 28       -- sparse forward chevrons
 local GROUND_TRUE_HALF_M = 10  -- warning width, not a measured damage footprint
 local GROUND_DISPLAY_HALF_M = 6 -- narrower visual band; collision grid stays unchanged
-local GROUND_LIFT_M = 0.8      -- leave breathing room over the sampled surface
+local GROUND_LIFT_M = 0.08     -- small depth clearance, not a hovering ground plane
+local UPRIGHT_BASE_LIFT_M = 0.8 -- marker/nameplates keep their existing elevation
 local GROUND_FLOW_HZ = 20
 local GROUND_FLOW_SPEED = 10   -- metres/second along the incoming heading
 local GROUND_ARROW_LENGTH_M = 5.2
@@ -1275,6 +1276,7 @@ local function release_line()
     end
     M.lines, M.line_order, M.line, M.line_world = {}, {}, nil, nil
     M.seg, M.geom_key, M.need_submit = nil, nil, false
+    M.static_line_plan,M.flow_line_plan=nil,nil
     M.flow_seg,M.flow_key=nil,nil
     M.ground_seg,M.ground_geom_key=nil,nil
     M.seg_count = 0
@@ -1429,17 +1431,13 @@ local function solid_mode()
     end
 end
 
--- Built ONCE per geometry change, and kept as Vector3 objects.
---
--- Constructing them every frame was the per-frame cost that showed up as a frame rate drop:
--- 64 segments x 2 endpoints x 60 frames is roughly 7,700 temporaries a second in the script
--- temp arena. Nothing here runs per frame any more.
--- Colours are rebuilt per submission, like the vectors. Caching them was the same mistake:
--- sr.Color allocates in the temp arena too, and this mod restores that arena every frame.
+-- Geometry caches contain plain Lua coordinates. Native vectors and colours
+-- are constructed only for work submitted in the current frame: sr.Color and
+-- sr.Vector3 use the temp arena that this mod restores at every frame's end.
 local function colour(kind)
-    if kind=='cordon_text' then return sr.Color(250,255,225,215) end
-    if kind=='cordon' then return sr.Color(215+10*math.sin(os.clock()*1.6),255,55,65) end
-    if kind=='cordon_dim' then return sr.Color(48,255,30,50) end
+    if kind=='cordon_text' then return sr.Color(255,255,225,215) end
+    if kind=='cordon' then return sr.Color(255,255,55,65) end
+    if kind=='cordon_dim' then return sr.Color(255,68,8,16) end
     if kind == 'marker' then return sr.Color(255, 255, 210, 90) end
     if kind == 'flow' then return sr.Color(235, 230, 255, 255) end
     local index=tonumber(kind:match('^sky(%d)$'))
@@ -2082,7 +2080,7 @@ local function build_geometry(ground_key)
         end
         -- Compact filled upright diamond, 2.8 m tall / 2.8 m wide. Two filled
         -- planes retain a silhouette from either side without a giant ground stamp.
-        local center = {imp[1],imp[2],imp[3]+GROUND_LIFT_M}
+        local center = {imp[1],imp[2],imp[3]+UPRIGHT_BASE_LIFT_M}
         for _, axis in ipairs({{hx, hy}, {px, py}}) do
             local top={center[1],center[2],center[3]+2.8}
             local left={center[1]-axis[1]*1.4,center[2]-axis[2]*1.4,center[3]+1.4}
@@ -2152,8 +2150,8 @@ local CORDON_GLYPHS={E={1,2,4,5,7},A={1,2,3,4,5,6},
 -- Templates contain only Lua coordinates, never frame-arena vectors or colours.
 -- A panel carries its name for its entire transit; no near-ball label reassignment.
 local CORDON_TEMPLATES={}
-local function cordon_template(text,solid)
-    local key=text..tostring(solid)
+local function cordon_template(text,solid,curved)
+    local key=text..tostring(solid)..tostring(curved)
     if CORDON_TEMPLATES[key] then return CORDON_TEMPLATES[key] end
     local pitch,height=0.64,0.8
     local width=(#text-1)*pitch+0.48
@@ -2179,8 +2177,14 @@ local function cordon_template(text,solid)
     local bottom,top,cut=0.3,1.65,0.28
     if solid then
         for _,range in ipairs({{-extent+cut,0},{0,extent-cut}}) do
-            quad('cordon_dim',{range[1],bottom},{range[2],bottom},
-                {range[2],top},{range[1],top})
+            -- A long circular chord bows inside the inner lettering surface.
+            -- Split each half so its sag stays below the 4 cm text separation.
+            local pieces=curved and 2 or 1
+            for i=1,pieces do
+                local a=range[1]+(range[2]-range[1])*(i-1)/pieces
+                local b=range[1]+(range[2]-range[1])*i/pieces
+                quad('cordon_dim',{a,bottom},{b,bottom},{b,top},{a,top})
+            end
         end
         quad('cordon_dim',{-extent,bottom+0.2},{-extent+cut,bottom},
             {-extent+cut,top},{-extent,top-0.2})
@@ -2225,35 +2229,46 @@ local function cordon_template(text,solid)
             end
         end
     end
-    -- Shared triangle corners are transformed and sampled only once per panel.
-    local vertices,ids={},{}
+    -- Cache horizontal columns separately: upper/lower stroke corners share
+    -- one terrain interpolation. All templates contain only ordinary Lua data.
+    local vertices,ids,columns,column_ids={},{},{},{}
     for _,shape in ipairs(shapes) do
         for k=2,shape[4] and 4 or 3 do
             local v=shape[k]
             local id=v[1]..'|'..v[2]..'|'..shape[5]
             if not ids[id] then
-                vertices[#vertices+1]={v[1],v[2],shape[5]}
+                local column=v[1]..'|'..shape[5]
+                if not column_ids[column] then
+                    columns[#columns+1]={v[1],shape[5]}
+                    column_ids[column]=#columns
+                end
+                vertices[#vertices+1]={v[1],v[2],shape[5],column_ids[column]}
                 ids[id]=#vertices
             end
             shape[k]=ids[id]
+            if shape[1]=='cordon_text' then
+                vertices[shape[k]].text=true
+                columns[vertices[shape[k]][4]].text=true
+            end
         end
     end
-    template.vertices=vertices
+    template.vertices,template.columns=vertices,columns
     CORDON_TEMPLATES[key]=template
     return template
 end
 
 local function add_cordon_panels(seg,imp,hx,hy,distance)
     local bounds=display_bounds(imp)
-    local template=cordon_template(type_label(imp),M.solid_active)
+    local template=cordon_template(type_label(imp),M.solid_active,bounds.shape=='circle')
     local lo,hi=bounds.lo,bounds.hi
     if bounds.shape=='circle' then lo,hi=-math.pi*bounds.radius/2,math.pi*bounds.radius/2 end
-    -- Fewer, fully named panels instead of numerous empty light strips.
-    local spacing=math.min(80,(hi-lo)/3)
+    -- Opaque plates need inside/outside names. Use wider gaps so double-sided
+    -- labels do not double the moving text load or form a visually solid wall.
+    local spacing=M.solid_active and math.min(120,(hi-lo)/1.5) or math.min(80,(hi-lo)/3)
     local phase=distance%spacing
     local start=math.floor(lo/spacing)*spacing+phase
     for _,side in ipairs({-1,1}) do
-        local function at(t,up,depth)
+        local function at(t,depth)
             local along,lateral=t,side*(bounds.half+depth)
             if bounds.shape=='circle' then
                 along=(bounds.radius+depth)*math.sin(t/bounds.radius)
@@ -2261,19 +2276,36 @@ local function add_cordon_panels(seg,imp,hx,hy,distance)
             end
             local x,y=imp.p[1]+hx*along-hy*lateral,imp.p[2]+hy*along+hx*lateral
             local z=ground_surface_z(imp,x,y)
-            return z and {x,y,z+GROUND_LIFT_M+up} or nil
+            if z then return x,y,z+UPRIGHT_BASE_LIFT_M end
         end
         for center=start,hi,spacing do
             if center-template.extent>=lo and center+template.extent<=hi then
-                local vertices={}
+                local xs,ys,zs,ixs,iys,izs={},{},{},{},{},{}
+                for i,c in ipairs(template.columns) do
+                    xs[i],ys[i],zs[i]=at(center-side*c[1],c[2])
+                    if M.solid_active and c.text then
+                        -- An opaque plate needs a name on each surface. Reverse
+                        -- the along coordinate so the inside name reads normally.
+                        ixs[i],iys[i],izs[i]=at(center+side*c[1],-c[2])
+                    end
+                end
+                local vertices,inner_vertices={},{}
                 for i,v in ipairs(template.vertices) do
-                    vertices[i]=at(center-side*v[1],v[2],v[3])
+                    local col=v[4]
+                    vertices[i]=zs[col] and {xs[col],ys[col],zs[col]+v[2]} or false
+                    if v.text and izs[col] then
+                        inner_vertices[i]={ixs[col],iys[col],izs[col]+v[2]}
+                    end
                 end
                 for _,shape in ipairs(template.shapes) do
                     local a,b=vertices[shape[2]],vertices[shape[3]]
                     if shape[4] then
                         local c=vertices[shape[4]]
                         if a and b and c then seg[#seg+1]={shape[1],a,b,c} end
+                        if shape[1]=='cordon_text' then
+                            a,b,c=inner_vertices[shape[2]],inner_vertices[shape[3]],inner_vertices[shape[4]]
+                            if a and b and c then seg[#seg+1]={shape[1],a,b,c} end
+                        end
                     elseif a and b then seg[#seg+1]={shape[1],a,b} end
                 end
             end
@@ -2387,17 +2419,43 @@ local function log_geometry_box()
         #M.track_order, #M.impact_order))
 end
 
-local function submit_geometry()
-    local world, line, seg = M.line_world, M.line, M.seg
-    if world == nil or line == nil or seg == nil then return false end
-    -- The engine objects are built HERE, in the frame that dispatches them, and never cached:
-    -- they live in the script temp arena, which this mod restores at the end of every frame.
+local function frame_colors()
     local colors = { air = colour('air'), ground = colour('ground'),
         holo = colour('holo'), trail = colour('trail'), marker = colour('marker'),flow=colour('flow'),
         cordon=colour('cordon'),cordon_dim=colour('cordon_dim'),cordon_text=colour('cordon_text') }
     for i=1,5 do colors['sky'..i]=colour('sky'..i) end
     colors.sky_edge=colour('sky_edge')
+    return colors
+end
+
+local function line_plan(batch,cached)
+    if cached and cached.source==batch then return cached end
+    local lines={}
+    for _,s in ipairs(batch) do if not s[4] then lines[#lines+1]=s end end
+    return {source=batch,lines=lines}
+end
+
+local function submit_geometry()
+    local world, line, seg = M.line_world, M.line, M.seg
+    if world == nil or line == nil or seg == nil then return false end
+    -- The engine objects are built HERE, in the frame that dispatches them, and never cached:
+    -- they live in the script temp arena, which this mod restores at the end of every frame.
     local flow=not M.selftest and ground_flow() or {}
+    local static_lines,flow_lines=seg,flow
+    if M.solid_active then
+        M.static_line_plan=line_plan(seg,M.static_line_plan)
+        M.flow_line_plan=line_plan(flow,M.flow_line_plan)
+        static_lines,flow_lines=M.static_line_plan.lines,M.flow_line_plan.lines
+    else
+        -- Line fallback already contains lines; do not copy it at animation Hz.
+        M.static_line_plan,M.flow_line_plan=nil,nil
+    end
+    local renderer=M.solid_renderer
+    local face_change=M.solid_active and (renderer.world~=world or renderer.static~=seg or renderer.flow~=flow)
+    local colors={}
+    if #static_lines>0 or #flow_lines>0 or face_change then
+        colors=frame_colors()
+    end
 
     -- Never pass a missing colour/vector into the native binding. In 1.7.0 ground segments
     -- stored a Color instead of the key 'ground', so the lookup below returned nil. Native
@@ -2405,7 +2463,7 @@ local function submit_geometry()
     local skipped = 0
     local ok = pcall(function()
         sr.LineObject.reset(line)
-        for _,batch in ipairs({seg,flow}) do
+        for _,batch in ipairs({static_lines,flow_lines}) do
             for i = 1, #batch do
                 local s = batch[i]
                 if not s[4] then
@@ -2473,6 +2531,7 @@ local function hide_line()
         end)
     end
     M.seg, M.geom_key, M.need_submit = nil, nil, false
+    M.static_line_plan,M.flow_line_plan=nil,nil
     M.flow_seg,M.flow_key=nil,nil
     M.ground_seg,M.ground_geom_key=nil,nil
     M.seg_count = 0

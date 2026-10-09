@@ -58,12 +58,16 @@ function R.new(sr)
         if self.world==world and self.static==static and self.flow==flow then
             return true,self.count
         end
-        -- Validate every face before crossing the native boundary.
+        -- Validate every changed face before crossing the native boundary;
+        -- retained immutable records at the same slots were already checked.
         local total=0
         for _,batch in ipairs({static,flow}) do
             for _,s in ipairs(batch) do
                 if s[4] then
-                    if not point(s[2]) or not point(s[3]) or not point(s[4]) or not colors[s[1]] then
+                    local retained=self.world==world and self.records[total+1]==s
+                        and self.records[total+2]==s
+                    if not retained and (not point(s[2]) or not point(s[3])
+                        or not point(s[4]) or not colors[s[1]]) then
                         return false,'invalid face/color'
                     end
                     total=total+2
@@ -86,15 +90,11 @@ function R.new(sr)
             if self.records[index]==record then return end
             local id=self.ids[index]
             if id~=nil then
-                sr.Gui.update_triangle(self.gui,id,
-                    sr.Vector3(a[1],a[3],a[2]),sr.Vector3(b[1],b[3],b[2]),
-                    sr.Vector3(c[1],c[3],c[2]),100,color)
+                sr.Gui.update_triangle(self.gui,id,a,b,c,100,color)
             else
                 -- Creation already converts twice; world vertices need no compensation.
                 -- Native objects are made in this frame and never cached in Lua.
-                id=sr.Gui.triangle(self.gui,
-                    sr.Vector3(a[1],a[2],a[3]),sr.Vector3(b[1],b[2],b[3]),
-                    sr.Vector3(c[1],c[2],c[3]),100,color)
+                id=sr.Gui.triangle(self.gui,a,b,c,100,color)
                 assert(type(id)=='number' and id>=0 and id%1==0,'triangle returned invalid ID')
                 self.ids[index]=id
             end
@@ -103,9 +103,37 @@ function R.new(sr)
         for _,batch in ipairs({static,flow}) do
             for _,s in ipairs(batch) do
                 if s[4] then
-                    local color=colors[s[1]]
-                    face(s[2],s[3],s[4],color,s)
-                    face(s[2],s[4],s[3],color,s)
+                    if self.records[index+1]==s and self.records[index+2]==s then
+                        index=index+2
+                    else
+                        -- The reverse winding shares this triangle's three native
+                        -- vertices, only inside this frame. No hash scratch maps or
+                        -- native objects are cached between calls.
+                        local a,b,c=s[2],s[3],s[4]
+                        local updating=self.ids[index+1]~=nil
+                        local va,vb,vc
+                        if updating then
+                            va,vb,vc=sr.Vector3(a[1],a[3],a[2]),sr.Vector3(b[1],b[3],b[2]),
+                                sr.Vector3(c[1],c[3],c[2])
+                        else
+                            va,vb,vc=sr.Vector3(a[1],a[2],a[3]),sr.Vector3(b[1],b[2],b[3]),
+                                sr.Vector3(c[1],c[2],c[3])
+                        end
+                        local color=colors[s[1]]
+                        face(va,vb,vc,color,s)
+                        -- Normally IDs come in pairs. Keep creation/update encodings
+                        -- separate even if a caller presents a partially filled pair.
+                        if (self.ids[index+1]~=nil)~=updating then
+                            if updating then
+                                va,vb,vc=sr.Vector3(a[1],a[2],a[3]),sr.Vector3(b[1],b[2],b[3]),
+                                    sr.Vector3(c[1],c[2],c[3])
+                            else
+                                va,vb,vc=sr.Vector3(a[1],a[3],a[2]),sr.Vector3(b[1],b[3],b[2]),
+                                    sr.Vector3(c[1],c[3],c[2])
+                            end
+                        end
+                        face(va,vc,vb,color,s)
+                    end
                 end
             end
         end

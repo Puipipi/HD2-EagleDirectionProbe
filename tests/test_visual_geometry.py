@@ -74,8 +74,8 @@ class VisualGeometryTest(unittest.TestCase):
             self.assertAlmostEqual(max(side) - min(side), 0.5, msg='fixed-width white band changed')
         self.assertLessEqual(max(abs(s[1][0] - s[2][0]) for s in edges), 15,
                              'long chords miss known changes in terrain height')
-        self.assertTrue(all(s[k][2] > 0.1 for s in ground for k in (1, 2)),
-                        'lift the strip slightly above sampled terrain')
+        self.assertTrue(all(0.03 <= s[k][2] <= 0.1 for s in ground for k in (1, 2)),
+                        'keep the strip close to the sampled terrain without coplanar flicker')
 
     def test_air_arrow_stays_near_aircraft_and_trail_is_separate(self):
         air = [s for s in self.segments if s[0] == 'air']

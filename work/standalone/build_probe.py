@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc5'
+VERSION = '1.10.0-rc6'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -66,14 +66,22 @@ WHAT THIS IS
   Ground triangles are 5.2 m long and 5.8 m wide. White ground borders are actual
   filled 0.5 m-wide bands in true-fill mode, subdivided on cached terrain.
   Circular references use a filled annulus. Line mode keeps the strand fallback.
-  Spaced upright red hologram plates have cut corners, a translucent face and a
-  slim lit rim. Every plate keeps its own specific REF name, or EAGLE ?.
+  Spaced upright red hologram plates have cut corners, an opaque dark-red face and a
+  slim lit rim. RC6 uses an opaque dark-red plate, rim and letters; every plate
+  keeps its own specific REF name, or EAGLE ?.
   Empty long plates and near-beacon label/size reassignment are removed.
   Panels start 1.1 m above cached ground and are 1.35 m tall. Their size is fixed
   for a given name, independent of camera distance. Names are real filled strokes
   offset 4 cm outward from the plate, using the same GUI path as the plate.
+  RC6 solid plates carry readable names on both surfaces. Wider gaps leave one
+  or two plates per long edge; columns of glyph corners share cached terrain
+  interpolation to offset the extra inner label work. Circular plate halves are
+  subdivided so opaque chords do not hide the inner letters.
   Whole panels and attached names move forward at 10 m/s, using the 20 Hz cache.
-  White borders/landing diamond stay static. No extra collision queries are made.
+  White borders/landing diamond stay static. Ground border/triangles now clear
+  cached terrain by 0.08 m instead of 0.8 m; upright plates/diamond keep their old
+  elevations. Coarse interpolation may still differ on uneven terrain.
+  No extra collision queries are made.
   EXPERIMENTAL TYPES: independent bounded active-record snapshots at 5 Hz with
   live guides or a freshly thrown beacon in its existing settling window.
   Two consecutive unique ball/record position matches identify a
@@ -104,6 +112,12 @@ WHAT THIS IS
   validation and native updates. Cached panel templates merge collinear letter
   strokes and reuse triangle corners. Ground faces use
   cached-height subdivisions and make no additional terrain collision queries.
+  RC6 shares three frame-local native vertices between opposed windings and
+  builds native colours only when needed. The solid path caches Lua line lists;
+  the line fallback uses its original batches without copying. Engine objects
+  never survive across frames. Appearance, motion, query budgets and guide counts
+  are unchanged except the lower ground clearance and spaced opaque two-sided plates above.
+  Offline Lua timings are not a game FPS measurement.
   This is a separate test candidate; 1.9.10 remains the stable release.
   Ground and aircraft guides retire together on a confirmed departure climb,
   without waiting for the aircraft object to despawn. Live guide count has no

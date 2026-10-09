@@ -21,6 +21,9 @@ SCENE = '''
 -- Instrument only the native boundary; no retained ADDED/COLORS tables from the harness.
 local lines=0
 local faces,face_updates=0,0
+local vector_calls,color_calls=0,0
+local vector=sr.Vector3
+sr.Vector3=function(...) vector_calls=vector_calls+1;return vector(...) end
 if BENCH_SOLID then
     sr.Matrix4x4.identity=function() return {} end
     sr.World.create_world_gui=function() return {} end
@@ -45,7 +48,7 @@ end
 sr.LineObject.reset=function() end
 sr.LineObject.add_line=function() lines=lines+1 end
 sr.LineObject.dispatch=function() end
-sr.Color=function(a,r,g,b) return {a=a,r=r,g=g,b=b} end
+sr.Color=function(a,r,g,b) color_calls=color_calls+1;return {a=a,r=r,g=g,b=b} end
 package.preload['mods/codex/eagle_terrain_query']=function()
     return {new=function() return {height=function(_,_,_,_,x,y,z) return z,'HIT' end} end}
 end
@@ -75,13 +78,15 @@ local kb=collectgarbage('count')
 local builds=M.ground_builds or 0
 local queries=M.terrain_queries or 0
 local type_reads=M.type_reads or 0
-lines=0;face_updates=0
+lines=0;face_updates=0;vector_calls=0;color_calls=0
 local face_creates=faces
 BENCH_STEP=function(n)
     step(n)
     BENCH_KB=collectgarbage('count')-kb
     BENCH_LINES=lines
     BENCH_FACE_UPDATES=face_updates
+    BENCH_VECTOR_CALLS=vector_calls
+    BENCH_COLOR_CALLS=color_calls
     BENCH_FACE_CREATES=faces-face_creates
     BENCH_ACTIVE_FACES=M.solid_triangles or 0
     BENCH_SOLID_ACTIVE=M.solid_active or false
@@ -115,6 +120,8 @@ def measure(path, strikes, frames, solid=False, types=False, type_id=18, rendere
             row={'ms_per_frame':ms,'allocated_kb_per_frame':g.BENCH_KB/frames,
                  'lines_per_frame':g.BENCH_LINES/frames,
                  'face_updates_per_frame':g.BENCH_FACE_UPDATES/frames,
+                 'vectors_per_frame':g.BENCH_VECTOR_CALLS/frames,
+                 'colors_per_frame':g.BENCH_COLOR_CALLS/frames,
                  'face_creates':g.BENCH_FACE_CREATES,'active_faces':g.BENCH_ACTIVE_FACES,
                  'solid_active':bool(g.BENCH_SOLID_ACTIVE),
                  'type_snapshots':g.BENCH_TYPE_READS,
