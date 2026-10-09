@@ -11,7 +11,7 @@ local registered,changed
 local rows,callbacks={},{}
 local host={api=1}
 host.register_option=function(id,spec)
-    assert(spec.type=='toggle','display controls must be toggles')
+    assert(spec.type=='toggle' or spec.type=='slider','unsupported display control')
     if id=='eagle_direction_probe.through_world' then
         assert(spec.default==false,'see-through must default off')
         registered=id

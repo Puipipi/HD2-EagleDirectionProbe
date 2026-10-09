@@ -4,7 +4,21 @@
 
 [下载 GitHub Release 安装包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/latest)
 
-## 当前测试版：1.10.0-rc6 绘制优化与贴地修正（2026-10-09）
+## 当前测试版：1.10.0-rc7 MOM 地面离地高度滑条（2026-10-09）
+
+[下载 rc7 测试包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/tag/v1.10.0-rc7)，
+或手动导入 `dist/HD2-EagleDirectionProbe-1.10.0-rc7.zip`。沿用 GUID，不自动部署。
+
+MOM → 飞鹰方向指引 → **地面指引离地高度（厘米）**：
+范围 **0～100 厘米**，每格 **1 厘米**，默认 **8 厘米**。
+点击“应用”后更新当前走廊边框和地面三角，并由 MOM 保存，下次加载恢复。
+光片、落点菱形、天空箭头保留各自高度；0 厘米可能与地表共面闪烁。
+调整高度只重建显示几何，复用现有地形缓存，不增加查询，也不重置活跃指引。
+
+189 项离线测试和六资源编译/封装校验通过。保留 rc6 的性能优化、不透明双面光片、
+方向锁定及退场；无 Runtime 依赖。滑条实机交互仍需手动验收，稳定版仍为 1.9.10。
+
+## 上个测试版：1.10.0-rc6 绘制优化与贴地修正（2026-10-09）
 
 [下载 rc6 测试包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/tag/v1.10.0-rc6)，
 或手动导入 `dist/HD2-EagleDirectionProbe-1.10.0-rc6.zip`。沿用 GUID，不自动部署。

@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc6',
+    version = '1.10.0-rc7',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -81,6 +81,7 @@ local M = {
     show_sky = true,
     show_ground_border = true,
     show_ground_triangles = true,
+    ground_lift_cm = 8,
     show_cordon = true,
     solid_fill = true,      -- experimental retained world triangles; saved MOM switch
     solid_active = false,
@@ -237,7 +238,7 @@ local GROUND_LANES = 6         -- three continuous white strands on each long si
 local GROUND_TICK_M = 28       -- sparse forward chevrons
 local GROUND_TRUE_HALF_M = 10  -- warning width, not a measured damage footprint
 local GROUND_DISPLAY_HALF_M = 6 -- narrower visual band; collision grid stays unchanged
-local GROUND_LIFT_M = 0.08     -- small depth clearance, not a hovering ground plane
+local GROUND_LIFT_M = M.ground_lift_cm/100 -- changed only when the saved MOM slider applies
 local UPRIGHT_BASE_LIFT_M = 0.8 -- marker/nameplates keep their existing elevation
 local GROUND_FLOW_HZ = 20
 local GROUND_FLOW_SPEED = 10   -- metres/second along the incoming heading
@@ -1287,8 +1288,17 @@ local LINE_CAP = 4
 -- Only plain Lua state changes in the callback. The next drawing frame replaces line
 -- objects if their creation-time depth flag changed; active strikes and heights survive.
 local function display_changed(key,value)
-    if type(value)=='boolean' and M[key]~=value then
+    if key=='ground_lift_cm' then
+        value=tonumber(value)
+        if not value or value~=value or math.abs(value)==math.huge then return end
+        value=math.max(0,math.min(100,math.floor(value+0.5)))
+    elseif type(value)~='boolean' then return end
+    if M[key]~=value then
         M[key]=value
+        if key=='ground_lift_cm' then
+            GROUND_LIFT_M=value/100
+            M.ground_geom_key=nil
+        end
         if key=='solid_fill' then M.solid_failed=nil end
         if key~='through_world' then M.geom_key,M.flow_key=nil,nil end
     end
@@ -1320,6 +1330,9 @@ local function menu_tick()
             '显示贴地的0.5米连续白色面带（真填充开启时）；线段模式使用加粗边框。与地面三角箭头分开控制，默认开启。点击应用后保存。'},
         {'show_ground_triangles','地面走廊三角',true,
             '显示放大的贴地实心三角箭头，与天空箭头以 10 m/s 顺向流动。任一地面选项开启时显示落点菱形。'},
+        {'ground_lift_cm','地面指引离地高度（厘米）',8,
+            '调整走廊边框和地面三角高于缓存地形的距离：0～100厘米，每格1厘米，默认8厘米。0可能与地表闪烁；不影响天空箭头、光片和落点菱形。点击应用后生效并保存。',
+            'slider',0,100,1},
         {'show_cordon','红色全息警戒带',true,
             '等尺寸切角红色薄光片，每片固定带字，以 10 m/s 移动，直带仅在长边；参考圆沿周界移动。名称唯一识别后显示，否则 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
     local complete=true
@@ -1328,8 +1341,10 @@ local function menu_tick()
         if not M.menu_rows[key] then
             local ok,why=pcall(function()
                 local id='eagle_direction_probe.'..key
-                local registered,reason=host.register_option(id,{type='toggle',mod='飞鹰方向指引',
-                    label=row[2],default=row[3],description=row[4]})
+                local spec={type=row[5] or 'toggle',mod='飞鹰方向指引',
+                    label=row[2],default=row[3],description=row[4]}
+                if spec.type=='slider' then spec.min,spec.max,spec.step=row[6],row[7],row[8] end
+                local registered,reason=host.register_option(id,spec)
                 if registered~=true then error(tostring(reason)) end
                 local value=host.get(id)
                 display_changed(key,value)
@@ -1356,7 +1371,7 @@ local function menu_tick()
     if complete then
         M.menu_host=host
         M.menu_status='REGISTERED'
-        log('Mod Options Menu: registered fill/depth/air/sky/borders/triangles/cordon toggles')
+        log('Mod Options Menu: registered display toggles and ground-height slider')
     end
 end
 
@@ -1934,6 +1949,7 @@ end
 -- have their own cache, independent of the fast moving aircraft indicator.
 local function ground_geometry_key()
     local parts={'g'..tostring(M.ground_revision or 0),tostring(M.show_ground_border),
+        tostring(M.ground_lift_cm),
         tostring(M.show_ground_triangles),tostring(M.show_cordon),tostring(M.solid_active),
         tostring(M.show_type),tostring(M.adapt_range)}
     for id,imp in pairs(M.impacts) do

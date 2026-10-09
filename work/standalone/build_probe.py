@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc6'
+VERSION = '1.10.0-rc7'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -150,6 +150,10 @@ WHAT THIS IS
   default), 飞鹰指示箭头 (ON), 天空方向箭头 (ON), 地面走廊边框 (ON),
   地面走廊三角 (ON), 红色全息警戒带 (ON), 真正面填充（测试） (ON),
   具体飞鹰名称（测试） (ON), 按战备调整参考范围（测试） (ON).
+  Ground-height slider 地面指引离地高度（厘米）: 0-100 cm in 1 cm steps,
+  default 8 cm. Apply to update existing borders and ground triangles, and save.
+  Sky arrows, plates and the landing diamond keep their independent heights.
+  Zero clearance may cause coplanar flicker. No additional terrain casts occur.
   The red tape follows the border switch.
   Click Apply; the menu saves choices. Either ground option
   shows the landing diamond. Hiding the aircraft arrow also hides its trail.
