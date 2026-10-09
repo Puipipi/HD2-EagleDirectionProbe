@@ -19,7 +19,7 @@ def resources(path):
         assert manifest['Guid'] == build.GUID and manifest['Version'] == 1
         blob = package.read('Addon/' + ARCHIVE)
     magic, version, count = struct.unpack_from('<III', blob)
-    assert magic == 0xF0000011 and version == 1 and count == 3
+    assert magic == 0xF0000011 and version == 1 and 1 <= count <= 16
     result = {}
     for i in range(count):
         fields = struct.unpack_from('<7Q6I', blob, 104 + i * 80)
@@ -34,6 +34,7 @@ def resources(path):
 def main():
     path = build.DIST / ('HD2-EagleDirectionProbe-%s.zip' % build.VERSION)
     current = resources(path)
+    assert len(current)==1+len(build.EXTRA_SOURCES), 'unexpected resource count'
     with zipfile.ZipFile(path) as package:
         manifest=json.loads(package.read('manifest.json'))
         assert manifest['IconPath']=='cover.png', 'missing manager cover reference'
@@ -46,11 +47,11 @@ def main():
         assert width==height and width>=512, 'cover should be a readable square image'
     for name, source in {build.RESOURCE: build.SOURCE, **build.EXTRA_SOURCES}.items():
         assert current[resource_hash(name)] == source.read_bytes(), name + ' differs from source'
-    previous = resources(build.DIST / 'HD2-EagleDirectionProbe-1.9.9.zip')
-    for name in build.EXTRA_SOURCES:
+    previous = resources(build.DIST / 'HD2-EagleDirectionProbe-1.9.10.zip')
+    for name in ('mods/codex/eagle_terrain_query','mods/codex/eagle_terrain_contract'):
         assert current[resource_hash(name)] == previous[resource_hash(name)], 'native module changed'
-    print('ZIP CRC, manifest, all 3 resource payloads: OK')
-    print('Native terrain resources byte-identical to 1.9.9: OK')
+    print('ZIP CRC, manifest, all 4 resource payloads: OK')
+    print('Native terrain resources byte-identical to 1.9.10: OK')
     print('Manager IconPath/option Image and bundled square PNG: OK (%d x %d)' % (width,height))
     print('Bytes:', path.stat().st_size)
     print('SHA256:', hashlib.sha256(path.read_bytes()).hexdigest())

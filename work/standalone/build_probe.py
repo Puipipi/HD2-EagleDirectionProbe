@@ -40,10 +40,11 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.9.10'
+VERSION = '1.10.0-rc1'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
+    'mods/codex/eagle_solid_renderer': REPO / 'src/solid_renderer.lua',
 }
 
 SCRIPT_EXTENSIONS = ('.bat', '.cmd', '.ps1', '.vbs', '.js', '.exe', '.dll')
@@ -62,14 +63,23 @@ WHAT THIS IS
   borders. Both ground/sky move 10 m/s; motion is cached at 20 Hz.
   Ground triangles are 5.2 m long and 5.8 m wide. White ground borders use three
   continuous strands over 0.5 m. Long edges carry six/seven spaced upright red light
-  panels per side, with dim scan fill, a bright baseline and a short upper bracket.
+  panels per side, with a dim face, a bright baseline and a short upper bracket.
   Panels start 1.1 m above cached ground. The panel nearest the beacon carries
   EAGLE ? lettering. Panels and attached letters move forward at 10 m/s and wrap
   at corridor ends, using the 20 Hz motion cache and cached terrain heights.
   White borders/landing diamond stay static. No extra collision queries are made.
   Exact type and full strike range are not identified; no automatic range adaptation.
-  Filled silhouettes use dense scan lines on the verified LineObject renderer,
-  not new native GUI/material calls; very close views can reveal scan lines.
+  EXPERIMENTAL TRUE FILL: actual retained world-GUI triangles replace scan lines
+  for aircraft arrows/shafts, sky shafts/heads, ground triangles, the diamond
+  and moving panels.
+  The native Lua signatures and create/update coordinate difference were audited
+  offline, but world appearance/material/depth still need mission validation.
+  MOM: 真正面填充（测试） defaults ON in this candidate. Turn it OFF to restore
+  the 1.9.10 line fill. Missing APIs also fall back. Enabling see-through forces
+  the line path; no unverified world-GUI depth override is used.
+  Faces reuse retained IDs, updating only on geometry changes. Ground faces use
+  cached-height subdivisions and make no additional terrain collision queries.
+  This is a separate test candidate; 1.9.10 remains the stable release.
   Ground and aircraft guides retire together on a confirmed departure climb,
   without waiting for the aircraft object to despawn. Live guide count has no
   numerical limit. Ground is 200 m long and visually 12 m wide. All its direction
@@ -96,7 +106,8 @@ WHAT THIS IS
   geometry cached at 20 Hz separately from static outlines; no extra ray queries.
   Mod Options Menu (optional): MODS > 飞鹰方向指引. Toggles: 透视显示 (OFF by
   default), 飞鹰指示箭头 (ON), 天空方向箭头 (ON), 地面走廊边框 (ON),
-  地面走廊三角 (ON), 红色全息警戒带 (ON). The red tape follows the border switch.
+  地面走廊三角 (ON), 红色全息警戒带 (ON), 真正面填充（测试） (ON).
+  The red tape follows the border switch.
   Click Apply; the menu saves choices. Either ground option
   shows the landing diamond. Hiding the aircraft arrow also hides its trail.
   Choices apply during a mission. Without the menu, these defaults are used.

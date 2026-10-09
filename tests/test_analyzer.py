@@ -236,8 +236,8 @@ class ReadOnlyContractTest(unittest.TestCase):
     CHANGED DELIBERATELY in 0.7.0: this class used to forbid `LineObject.add_line`, because
     the addon drew nothing. It now draws the Eagle corridor, so that assertion had to be
     relaxed rather than deleted quietly. What replaces it is narrower and still meaningful:
-    drawing may go through the LineObject API and NOTHING else, the GUI path stays banned,
-    and every write call stays banned.
+    The stable line path stays in the main module; experimental world triangles
+    live in an isolated renderer. Gameplay writes remain banned in both modules.
     """
 
     DRAW_API = ('sr.LineObject.reset', 'sr.LineObject.add_line', 'sr.LineObject.dispatch',
@@ -255,14 +255,22 @@ class ReadOnlyContractTest(unittest.TestCase):
             self.assertNotIn(forbidden, self.source,
                              '%s appears in a no-write addon' % forbidden)
 
-    def test_the_only_drawing_api_is_the_line_api(self):
-        """Drawing is allowed now - but only through the API a running mod proved."""
+    def test_line_fallback_and_isolated_triangle_renderer(self):
+        """Main keeps the proven line path; only audited GUI calls enter the new module."""
         for call in self.DRAW_API:
             self.assertIn(call, self.source, '%s is the verified drawing path' % call)
         # Every draw call site must be one of the allowed ones: no other draw namespace.
         for forbidden in ('sr.Gui.', 'sr.Camera.draw', 'create_world_gui', 'sr.Material.'):
             self.assertNotIn(forbidden, self.source,
                              '%s is not part of the verified drawing path' % forbidden)
+        renderer=(SOURCE_PATH.parent/'solid_renderer.lua').read_text(encoding='utf-8')
+        self.assertIn('mods/codex/eagle_solid_renderer',self.source)
+        for call in ('sr.World.create_world_gui','sr.World.destroy_gui',
+                     'sr.Gui.triangle','sr.Gui.update_triangle','sr.Gui.destroy_triangle'):
+            self.assertIn(call,renderer)
+        for forbidden in ('ffi','spawn_unit','destroy_unit','WriteProcessMemory',
+                          'set_local_position','Material.set','create_screen_gui'):
+            self.assertNotIn(forbidden,renderer)
 
     def test_no_ffi_at_all(self):
         self.assertNotIn('ffi', self.source,

@@ -15,7 +15,7 @@
 --
 -- READ-ONLY CONTRACT (auditable, please check it rather than trust it):
 --   * no memory write of any kind appears in this file
---   * no native game function that mutates state is called
+--   * no gameplay state mutation; only display objects are created/updated
 --   * engine accessors plus a separately guarded, read-only collision query module
 --   * Lua errors are recorded; pcall cannot protect against native faults
 --   * it writes exactly two files, both under the loader's existing log directory
@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.9.10',
+    version = '1.10.0-rc1',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -82,6 +82,8 @@ local M = {
     show_ground_border = true,
     show_ground_triangles = true,
     show_cordon = true,
+    solid_fill = true,      -- experimental retained world triangles; saved MOM switch
+    solid_active = false,
     every_frame = true,     -- submit every frame: the line does NOT persist between frames
     frame_last = nil,       -- high-resolution frame clock, for the honest timing report
     frame_peak_ms = 0,
@@ -1243,6 +1245,8 @@ local function drawing_allowed(now)
 end
 
 local function release_line()
+    if M.solid_renderer then pcall(M.solid_renderer.release,M.solid_renderer) end
+    M.solid_active,M.solid_triangles=false,0
     -- Destroy every line object we hold. Called on shutdown, on eviction, and when drawing
     -- switches itself off - NEVER inside the draw path, which is the important part. The
     -- worldchurn harness run showed the old code creating and destroying a line object every
@@ -1267,6 +1271,7 @@ local LINE_CAP = 4
 local function display_changed(key,value)
     if type(value)=='boolean' and M[key]~=value then
         M[key]=value
+        if key=='solid_fill' then M.solid_failed=nil end
         if key~='through_world' then M.geom_key,M.flow_key=nil,nil end
     end
 end
@@ -1281,6 +1286,8 @@ local function menu_tick()
         or type(host.on_change)~='function' then return end
     if M.menu_candidate~=host then M.menu_candidate,M.menu_rows=host,{} end
     local rows={
+        {'solid_fill','真正面填充（测试）',true,
+            '用真实三角面填充箭头、落点菱形与移动光片。默认开启；尚待实机验证。关闭恢复线段填充；开启透视时自动使用线段。点击应用后保存。'},
         {'through_world','透视显示',false,
             '开启后，空中箭头和地面走廊会穿过地形及建筑显示。默认关闭；点击应用后生效并保存。'},
         {'show_air','飞鹰指示箭头',true,
@@ -1327,7 +1334,7 @@ local function menu_tick()
     if complete then
         M.menu_host=host
         M.menu_status='REGISTERED'
-        log('Mod Options Menu: registered depth/air/sky/borders/triangles/cordon toggles')
+        log('Mod Options Menu: registered fill/depth/air/sky/borders/triangles/cordon toggles')
     end
 end
 
@@ -1377,6 +1384,31 @@ local function ensure_line(world)
 end
 
 -- ---------------------------------------------------------------- the geometry --
+local function solid_mode()
+    local active=false
+    if M.solid_fill and not M.through_world and not M.solid_failed then
+        if not M.solid_renderer and not M.solid_checked then
+            M.solid_checked=true
+            local ok,module=pcall(require,'mods/codex/eagle_solid_renderer')
+            if ok and type(module)=='table' and type(module.new)=='function' then
+                local made,renderer,reason=pcall(module.new,sr)
+                if made then M.solid_renderer,M.solid_status=renderer,reason
+                else M.solid_status=tostring(renderer) end
+            else M.solid_status='triangle module unavailable' end
+            log(M.solid_renderer and 'true fill: experimental world-triangle renderer ready'
+                or 'true fill unavailable; using lines: '..tostring(M.solid_status))
+        end
+        active=M.solid_renderer~=nil
+    end
+    if active~=M.solid_active then
+        if not active and M.solid_renderer then
+            pcall(M.solid_renderer.release,M.solid_renderer)
+        end
+        M.solid_active=active
+        M.geom_key,M.flow_key,M.ground_geom_key,M.selftest_seg=nil,nil,nil,nil
+    end
+end
+
 -- Built ONCE per geometry change, and kept as Vector3 objects.
 --
 -- Constructing them every frame was the per-frame cost that showed up as a frame rate drop:
@@ -1432,6 +1464,14 @@ local function add_ribbon(seg, ax, ay, az, bx, by, bz, strands, kind)
     local step = STRAND_STEP_PER_M * math.max(dist, 15)
     if kind == 'ground' or kind == 'marker' then step = math.max(step, 0.18) end
     local half = (strands - 1) / 2
+    if M.solid_active and kind=='air' then
+        local width=half*step
+        local a,b={ax-px*width,ay-py*width,az},{bx-px*width,by-py*width,bz}
+        local c,d={bx+px*width,by+py*width,bz},{ax+px*width,ay+py*width,az}
+        seg[#seg+1]={kind,a,b,c}
+        seg[#seg+1]={kind,a,c,d}
+        return
+    end
     for i = -half, half do
         local o = i * step
         seg[#seg + 1] = { kind, { ax + px * o, ay + py * o, az },
@@ -1440,11 +1480,37 @@ local function add_ribbon(seg, ax, ay, az, bx, by, bz, strands, kind)
 end
 
 
--- Dense scan conversion through the already verified line renderer. Small planar
--- glyphs read as filled silhouettes at normal warning distances, without adding a
--- native GUI/material path. Bounded work per glyph; all vertices remain plain Lua.
--- Ground rows sample the height cache at BOTH ends, never make collision calls.
+-- Actual triangle faces in the candidate, with dense line scan conversion as fallback.
+-- All stored vertices are plain Lua; ground samples only read the height cache.
+local function add_quad(seg,a,b,c,d,kind)
+    if a and b and c and d then
+        seg[#seg+1]={kind,a,b,c}
+        seg[#seg+1]={kind,a,c,d}
+    end
+end
+
 local function add_filled_triangle(seg,tip,left,right,kind,spacing,surface)
+    if M.solid_active then
+        if not surface then seg[#seg+1]={kind,tip,left,right};return end
+        -- Three strips preserve coarse height fitting using the existing cache.
+        -- Five actual faces replace dozens of scan lines; no collision queries.
+        local prev_a,prev_b=tip,tip
+        for row=1,3 do
+            local a,b={},{}
+            for k=1,3 do
+                a[k]=tip[k]+(left[k]-tip[k])*row/3
+                b[k]=tip[k]+(right[k]-tip[k])*row/3
+            end
+            local za,zb=surface(a[1],a[2]),surface(b[1],b[2])
+            a[3],b[3]=za and za+GROUND_LIFT_M,zb and zb+GROUND_LIFT_M
+            if a[3] and b[3] and prev_a and prev_b then
+                seg[#seg+1]={kind,prev_a,a,b}
+                if row>1 then seg[#seg+1]={kind,prev_a,b,prev_b} end
+            end
+            prev_a,prev_b=a[3] and a or nil,b[3] and b or nil
+        end
+        return
+    end
     local dx,dy,dz=tip[1]-(left[1]+right[1])/2,
         tip[2]-(left[2]+right[2])/2,tip[3]-(left[3]+right[3])/2
     local rows=math.max(2,math.min(80,math.ceil(math.sqrt(dx*dx+dy*dy+dz*dz)/spacing)))
@@ -1745,11 +1811,15 @@ local function add_sky_corridor(seg,imp,phase)
         add_filled_triangle(seg,at(t,0),at(t-5,-3.2),at(t-5,3.2),kind,0.15)
         -- Fill the shaft across its short dimension: eleven long strokes rather
         -- than sixty short ones, preserving density with lower submission cost.
-        for row=0,10 do
-            local dz=-0.6+1.2*row/10
-            seg[#seg+1]={kind,at(t-14,dz),at(t-5,dz)}
+        if M.solid_active then
+            add_quad(seg,at(t-14,-0.6),at(t-5,-0.6),at(t-5,0.6),at(t-14,0.6),kind)
+        else
+            for row=0,10 do
+                local dz=-0.6+1.2*row/10
+                seg[#seg+1]={kind,at(t-14,dz),at(t-5,dz)}
+            end
+            seg[#seg+1]={kind,at(t-14,-0.6),at(t-14,0.6)}
         end
-        seg[#seg+1]={kind,at(t-14,-0.6),at(t-14,0.6)}
     end
 end
 
@@ -1757,7 +1827,7 @@ end
 -- have their own cache, independent of the fast moving aircraft indicator.
 local function ground_geometry_key()
     local parts={'g'..tostring(M.ground_revision or 0),tostring(M.show_ground_border),
-        tostring(M.show_ground_triangles),tostring(M.show_cordon)}
+        tostring(M.show_ground_triangles),tostring(M.show_cordon),tostring(M.solid_active)}
     for id,imp in pairs(M.impacts) do
         local h=imp.heading
         parts[#parts+1]=string.format('%s:%.1f,%.1f,%.1f:%s',tostring(id),
@@ -1933,11 +2003,19 @@ local function add_cordon_panels(seg,imp,hx,hy,phase)
             if center-extent>=-GROUND_HALF_M and center+extent<=GROUND_HALF_M then
                 local rows=label_panel and 8 or 5
                 local height=label_panel and 1 or 0.6
-                for row=0,rows do
-                    local up=0.3+height*row/rows
-                    local kind=row==0 and 'cordon' or 'cordon_dim'
-                    line(kind,center-extent,up,center,up)
-                    line(kind,center,up,center+extent,up)
+                if M.solid_active then
+                    for _,ends in ipairs({{center-extent,center},{center,center+extent}}) do
+                        add_quad(seg,at(ends[1],0.3),at(ends[2],0.3),
+                            at(ends[2],0.3+height),at(ends[1],0.3+height),'cordon_dim')
+                        line('cordon',ends[1],0.3,ends[2],0.3)
+                    end
+                else
+                    for row=0,rows do
+                        local up=0.3+height*row/rows
+                        local kind=row==0 and 'cordon' or 'cordon_dim'
+                        line(kind,center-extent,up,center,up)
+                        line(kind,center,up,center+extent,up)
+                    end
                 end
                 line('cordon',center-extent,0.3+height,center-extent+0.85,0.3+height)
                 line('cordon',center-extent,0.3+height,center-extent,0.3+height-0.2)
@@ -2047,7 +2125,7 @@ local function log_geometry_box()
     local lo1, lo2, lo3, hi1, hi2, hi3 = nil, nil, nil, nil, nil, nil
     local ok = pcall(function()
         for i = 1, #seg do
-            for k = 2, 3 do
+            for k = 2, seg[i][4] and 4 or 3 do
                 local x, y, z = seg[i][k][1], seg[i][k][2], seg[i][k][3]
                 if x then
                     lo1 = (lo1 == nil or x < lo1) and x or lo1
@@ -2088,13 +2166,15 @@ local function submit_geometry()
         for _,batch in ipairs({seg,flow}) do
             for i = 1, #batch do
                 local s = batch[i]
-                local c = colors[s[1]]
-                local a = sr.Vector3(s[2][1], s[2][2], s[2][3])
-                local b = sr.Vector3(s[3][1], s[3][2], s[3][3])
-                if c == nil or a == nil or b == nil then
-                    skipped = skipped + 1
-                else
-                    sr.LineObject.add_line(line, c, a, b)
+                if not s[4] then
+                    local c = colors[s[1]]
+                    local a = sr.Vector3(s[2][1], s[2][2], s[2][3])
+                    local b = sr.Vector3(s[3][1], s[3][2], s[3][3])
+                    if c == nil or a == nil or b == nil then
+                        skipped = skipped + 1
+                    else
+                        sr.LineObject.add_line(line, c, a, b)
+                    end
                 end
             end
         end
@@ -2115,6 +2195,17 @@ local function submit_geometry()
         log('corridor drawing ERRORED and switched itself off; sampling continues')
         return false
     end
+    if M.solid_active then
+        local called,accepted,count=pcall(M.solid_renderer.submit,M.solid_renderer,world,seg,flow,colors)
+        if called and accepted then M.solid_triangles=count
+        else
+            M.solid_failed=true
+            M.solid_status=tostring(called and count or accepted)
+            pcall(M.solid_renderer.release,M.solid_renderer)
+            solid_mode() -- Rebuild the line fallback on the next frame.
+            log('true fill disabled; line fallback: '..M.solid_status)
+        end
+    end
     M.submits = (M.submits or 0) + 1
     M.seg_count = #seg+#flow
     -- The first submission and then roughly every ten seconds, so the log says where the
@@ -2129,6 +2220,8 @@ local function submit_geometry()
 end
 
 local function hide_line()
+    if M.solid_renderer then pcall(M.solid_renderer.clear,M.solid_renderer) end
+    M.solid_triangles=0
     if M.line and M.line_world then
         pcall(function()
             sr.LineObject.reset(M.line)
@@ -2148,7 +2241,10 @@ local function draw_corridor()
     -- works DURING a session and not only at load. It was written and then not called, which
     -- would have left the switch effective only on restart - the opposite of what the README
     -- promises and of what makes it an escape hatch.
-    if not drawing_allowed(os.clock()) then return end
+    if not drawing_allowed(os.clock()) then
+        if M.solid_renderer then pcall(M.solid_renderer.release,M.solid_renderer) end
+        return
+    end
 
     -- Drawing self-test: a fixed line beside the ship, so the line API is proven on this
     -- build while the player is still on the ship. It clears itself afterwards; the file
@@ -2171,6 +2267,7 @@ local function draw_corridor()
             log('SELFTEST FAILED: create_line_object returned nothing')
             return
         end
+        solid_mode()
         local o = M.selftest_origin
         if M.selftest_seg == nil then
             -- Exercise the SAME holographic arrow helper as the live aircraft.
@@ -2205,8 +2302,9 @@ local function draw_corridor()
     end
 
     local world = main_world()
-    if world == nil then return end
+    if world == nil then hide_line();return end
     if ensure_line(world) == nil then return end
+    solid_mode()
 
     -- Submit EVERY frame, not only when the geometry changes.
     --

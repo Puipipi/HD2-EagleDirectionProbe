@@ -4,7 +4,21 @@
 
 [下载 GitHub Release 安装包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/latest)
 
-## 当前维护状态：1.9.10 光片与标签顺向流动（2026-10-09）
+## 当前测试版：1.10.0-rc1 真正三角面填充（2026-10-09）
+
+独立测试包：`dist/HD2-EagleDirectionProbe-1.10.0-rc1.zip`，手动导入。
+飞鹰箭头与箭杆、天空 →、地面三角、金色菱形和移动红色光片使用真实世界空间三角面，
+不再用横线模拟填充。白色走廊边框、光片边缘和文字仍使用线段。
+
+菜单新增 **“真正面填充（测试）”**，本测试版默认开启，MOM 保存选择。关闭后恢复原线段方式；
+开启“透视显示”或所需接口缺失时也使用线段。真填充保留地形缓存与全局每帧两次查询预算，
+不依赖 Runtime。三角面复用对象 ID，只在几何变化时更新；结束、切换和世界退出时清理。
+
+**尚未实机验证世界 GUI 的材质、遮挡与性能**。原生签名及创建/更新的坐标差异已离线核查，
+模拟接口回放不能证明原生调用无故障。稳定版仍为 1.9.10，保留原下载供回退。
+具体接口证据、验证结果和实机步骤见 [真填充测试说明](docs/solid-fill-candidate-1.10.0-rc1.md)。
+
+## 上个稳定版：1.9.10 光片与标签顺向流动
 
 安装包：`dist/HD2-EagleDirectionProbe-1.9.10.zip`，沿用原 GUID，供手动导入，没有自动部署。
 已加入飞鹰与全息箭头主题封面：`assets/cover.png`；包内根目录 `cover.png` 通过管理器
@@ -74,7 +88,7 @@
 详见 `docs/mission-feedback-1.9.10.md`。
 `docs/holographic-geometry.png` 和
 `docs/holographic-motion.gif` 为源码几何示意，非实机画面。
-`docs/cordon-panels-preview.png` 展示断续光片及标签近景。当前所有填充仍为密排线段；
+`docs/cordon-panels-preview.png` 展示断续光片及标签近景。1.9.10 的所有填充仍为密排线段；
 真正三角面接口的核查结论见 `docs/mission-feedback-1.9.9.md`。
 
 ```powershell
