@@ -19,7 +19,8 @@ sr.World.spawn_unit=function(world,name,...)
     assert(name=='content/helmet_headlamp/runtime_mode_profiles')
     spawned=spawned+1
     local u={id=spawned,alive=true,lights={}}
-    for i=0,4 do u.lights[i]={owner=u,enabled=true} end
+    for i=0,4 do u.lights[i]={owner=u,enabled=true,inner=1.92,outer=2.79,
+        reach=30,shadows=true,volumetric=true} end
     owned[u]=true
     return u
 end
@@ -34,10 +35,17 @@ sr.Unit.alive=function(u)
 end
 sr.Unit.node=function(u,name) assert(owned[u] and name=='StingrayEntityRoot');return 0 end
 sr.Unit.num_lights=function(u) assert(owned[u]);return 5 end
-sr.Unit.has_light=function(u,name) assert(owned[u]);return name=='helmet_headlamp_task_fill' end
+local light_index={
+    helmet_headlamp_task_fill=0,helmet_headlamp_task_soft_reach=1,
+    helmet_headlamp_gameplay_fill=2,helmet_headlamp_gameplay_direction=3,
+    helmet_headlamp_default_task=4,
+}
+sr.Unit.has_light=function(u,name) assert(owned[u]);return light_index[name]~=nil end
 sr.Unit.light=function(u,which)
     assert(owned[u] and u.alive,'touched player headlamp or stale helper')
-    return u.lights[which=='helmet_headlamp_task_fill' and 0 or which]
+    local index=type(which)=='string' and light_index[which] or which
+    assert(index~=nil,'unknown named light')
+    return u.lights[index]
 end
 sr.Unit.set_local_position=function(u,node,v)
     assert(owned[u] and node==0 and v[1]==v[1] and v[3]>0)
@@ -73,6 +81,86 @@ end
 
 
 class NativeLightProbeTest(unittest.TestCase):
+    def test_optional_lookup_and_update_apis_can_be_missing_with_safe_named_light_cleanup(self):
+        replay(FLAT+MENU+NATIVE+'''
+sr.Unit.num_lights=nil
+sr.Unit.has_light=nil
+sr.World.update_unit=nil
+saved['eagle_direction_probe.show_native_light_probe']=true
+frames(50)
+assert(spawned==1 and live_count()==1,'optional API absence blocked named-light setup')
+assert(#M.seg>0,'missing optional APIs broke existing guide drawing')
+local u=next(owned)
+local lit=0
+for _,l in pairs(u.lights) do if l.enabled then
+    lit=lit+1
+    assert(l==u.lights[0],'an unrelated resource light stayed enabled')
+end end
+assert(lit==1,'named-light setup did not leave only task fill active')
+shutdown()
+assert(live_count()==0 and removed==1,'named-light cleanup left a helper alive')
+''')
+
+    def test_missing_required_apis_are_reported_together(self):
+        replay(FLAT+MENU+NATIVE+'''
+sr.Light.set_color=nil
+sr.Unit.set_unit_visibility=nil
+saved['eagle_direction_probe.show_native_light_probe']=true
+frames(50)
+assert(spawned==0,'helper spawned with required APIs missing')
+local status=M.native_light_status
+assert(status:find('Light.set_color',1,true),'first missing API was omitted from reason')
+assert(status:find('Unit.set_unit_visibility',1,true),'second missing API was omitted from reason')
+''')
+
+    def test_update_unit_errors_are_best_effort_for_created_and_moved_lights(self):
+        replay(FLAT+MENU+NATIVE+'''
+sr.World.update_unit=function() error('unsupported signature') end
+saved['eagle_direction_probe.show_native_light_probe']=true
+frames(50)
+assert(live_count()==1,'update_unit error blocked native light creation')
+M.impacts[1].p={5,6,7};frames(1)
+local u=next(owned)
+assert(u.p[1]==5 and u.p[2]==6 and u.p[3]==19,
+    'update_unit error blocked local helper positioning')
+shutdown()
+assert(live_count()==0 and removed==1,'shutdown left the native light helper alive')
+''')
+
+    def test_present_but_wrong_num_lights_rejects_the_resource_profile(self):
+        replay(FLAT+MENU+NATIVE+'''
+sr.Unit.num_lights=function() return 4 end
+saved['eagle_direction_probe.show_native_light_probe']=true
+frames(60)
+assert(M.native_light_status:find('headlamp resource profile unavailable',1,true),
+    'wrong resource light count was not rejected: '..M.native_light_status)
+assert(live_count()==0,'wrong resource light count leaked a helper')
+assert(M.native_light_status:find('unavailable',1,true),'wrong resource count reason missing')
+''')
+
+    def test_missing_spot_angle_setters_preserve_the_resource_cone_and_still_light(self):
+        for missing in (
+            'sr.Light.set_spot_angle_start=nil;sr.Light.set_spot_angle_end=nil',
+            'sr.Light.set_spot_angle_start=nil',
+        ):
+            with self.subTest(missing=missing):
+                replay(FLAT+MENU+NATIVE+missing+'''
+saved['eagle_direction_probe.show_native_light_probe']=true
+frames(50)
+assert(spawned==1 and live_count()==1,'optional spot-angle API blocked native light creation')
+local u=next(owned)
+local lit=0
+for _,l in pairs(u.lights) do if l.enabled then lit=lit+1 end end
+assert(lit==1,'resource default cone did not remain enabled')
+local light=sr.Unit.light(u,'helmet_headlamp_task_fill')
+assert(light.inner==1.92 and light.outer==2.79 and light.reach==30,
+    'prototype modified the resource-authored cone or falloff')
+assert(M.native_light_status=='native red spotlight active (prototype)',
+    'native light did not report active with its resource cone')
+shutdown()
+assert(live_count()==0 and removed==1,'shutdown left the native light helper alive')
+''')
+
     def test_saved_toggle_creates_real_light_only_in_own_helper_without_red_face_overlay(self):
         replay(FLAT+MENU+NATIVE+'''
 frames(50)
@@ -87,7 +175,9 @@ for _,l in pairs(u.lights) do if l.enabled then
     lit=lit+1
     assert(l.rgb[1]>1000 and l.rgb[2]<l.rgb[1]/20 and l.rgb[3]<l.rgb[1]/20,
         'prototype did not set native HDR red light colour')
-    assert(l.outer>l.inner and l.reach>=20,'native cone/falloff not configured')
+    assert(l.inner==1.92 and l.outer==2.79 and l.reach==30,
+        'resource-authored cone/falloff was changed')
+    assert(l.shadows and l.volumetric,'resource-authored lighting flags were changed')
 end end
 assert(lit==1,'unused headlamp lights were left enabled')
 apply('show_ground_area',true);frames(1)
@@ -106,6 +196,18 @@ saved['eagle_direction_probe.show_native_light_probe']=true
 frames(60)
 assert(spawned==0 and #M.seg>0,'missing native light support broke existing drawing')
 assert(M.native_light_status:find('unavailable',1,true),'unavailable reason missing')
+''')
+
+    def test_unverified_render_flag_setters_cannot_block_a_usable_light(self):
+        replay(FLAT+MENU+NATIVE+'''
+sr.Light.set_casts_shadows=function() error('unsupported signature') end
+sr.Light.set_volumetric_enabled=function() error('unsupported signature') end
+saved['eagle_direction_probe.show_native_light_probe']=true
+frames(50)
+assert(spawned==1 and live_count()==1,'unverified render flag setter blocked native light')
+assert(M.native_light_status=='native red spotlight active (prototype)')
+shutdown()
+assert(live_count()==0 and removed==1,'shutdown left the native light helper alive')
 ''')
 
     def test_helper_repositions_without_respawn_and_retires_with_guide(self):

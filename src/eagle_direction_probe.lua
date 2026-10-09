@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc9',
+    version = '1.10.0-rc10',
     status = 'starting',
     reads = 0,
     errors = 0,

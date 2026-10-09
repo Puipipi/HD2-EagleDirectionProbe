@@ -8,7 +8,7 @@ from test_solid_renderer import GUI
 
 class SkyAdaptiveTest(unittest.TestCase):
     def test_all_types_keep_complete_arrows_inside_reference_bounds_over_wraps(self):
-        for kind,lo,hi in ((18,-60,60),(30,-5,55),(65,-48,48),(133,-50,50),
+        for kind,lo,hi in ((18,-60,60),(30,-5,55),(65,-48,48),(133,-100/3,100/3),
                            (38,-48,48),(126,-48,48),(3,-25,25),(140,-100,100)):
             with self.subTest(kind=kind):
                 replay(GUI+TYPES+FLAT+f'''

@@ -4,10 +4,26 @@
 
 [下载 GitHub Release 安装包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/latest)
 
-## 当前测试版：1.10.0-rc9 原生红光原型与六块循环光片（2026-10-09）
+## 当前测试版：1.10.0-rc10 原生投光兼容修复与凝固汽油参考校准（2026-10-09）
+
+[下载 rc10 测试包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/tag/v1.10.0-rc10)，
+或手动导入 `dist/HD2-EagleDirectionProbe-1.10.0-rc10.zip`。沿用 GUID，不自动部署。
+
+rc9 实机日志记录 `Light.set_spot_angle_start unavailable`，原型在创建灯前即停止；rc10 保留资源自带光锥和衰减，按已知名称解析四个功能灯，并把 `Unit.num_lights`、`Unit.has_light`、`World.update_unit` 作为可选能力处理。
+任务填充灯仍设为红色，其余已解析的功能灯与可选标记灯关闭；清理仅使用本原型持有的灯光句柄。
+
+原生投光开关仍默认关闭，需另外安装并启用 Helmet Headlamp 1.0.0 资源。rc10 修复的是实机 API 兼容门槛，红光是否能照亮地面、光轴是否朝下、亮度和 GPU 成本仍待实机验证；没有刺魟投影纹理，也不声称已经解析其投影资源。
+
+凝固汽油参考长度按用户校准：旧 100 m 范围的两端各缩短 1/6，形成总长约 66.67 m、总宽 20 m 的参考范围；中心和来袭方向保持不变。这是显示校准，不是已测量的伤害、弹着或持续火场边界。
+
+216 项全量离线测试通过；七项资源通过 LuaJIT 编译与封装校验，原生地形与 1.9.10 的字节比较记录在 [rc10 交付说明](docs/release-1.10.0-rc10.md)。没有新增地形查询或活跃灯数量上限；普通方向指引不依赖 HD2Runtime。
+
+## 上个测试版：1.10.0-rc9 原生红光原型与六块循环光片（2026-10-09）
 
 [下载 rc9 测试包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/tag/v1.10.0-rc9)，
 或手动导入 `dist/HD2-EagleDirectionProbe-1.10.0-rc9.zip`。沿用 GUID，不自动部署。
+
+**实机更正：** rc9 日志于 2026-10-09 11:18:47Z 记录 `Light.set_spot_angle_start unavailable`；该能力预检导致 helper 未创建。请用 rc10 重新验证原生投光。
 
 光片改为**左右各三块、等间距首尾循环**，整块光片和两面的战备名称同步以 10 m/s 移动。
 到末端后整块回到开头，保持完整尺寸、文字和不透明外观。矩形、窄走廊及圆形参考范围均覆盖测试。

@@ -69,6 +69,62 @@ M.tracks={};M.track_order={};M.impacts={};frames(1)
 assert(next(faces)==nil,'type-specific guide survived strike retirement')
 ''')
 
+    def test_napalm_calibrated_ends_hold_ground_sky_and_six_flow_cycles(self):
+        replay(GUI+TYPES+FLAT+MENU+'''
+type_rows[1].type=133
+frames(60)
+local imp=M.impacts[1]
+assert(imp.stratagem_type==133 and M.type_labels[1]=='REF NAPALM')
+local center={unpack(imp.p)};local heading={unpack(imp.heading)}
+local bound=100/3
+local function along(x,y)
+    return (x-center[1])*heading[1]+(y-center[2])*heading[2]
+end
+local lo,hi,lateral,ground=math.huge,-math.huge,0,0
+for _,s in ipairs(M.seg) do if s[1]=='ground' or s[1]=='area' then
+    for k=2,#s do if type(s[k])=='table' then
+        local p=s[k];local t=along(p[1],p[2])
+        lo,hi=math.min(lo,t),math.max(hi,t)
+        local side=-(p[1]-center[1])*heading[2]+(p[2]-center[2])*heading[1]
+        lateral=math.max(lateral,math.abs(side))
+        if s[1]=='ground' then ground=ground+1 end
+        assert(t>=-bound-0.001 and t<=bound+0.001,
+            'Napalm ground endpoint exceeded the user-calibrated range')
+    end end
+end end
+assert(ground>0 and math.abs(lo+bound)<0.01 and math.abs(hi-bound)<0.01,
+    'Napalm ground ends did not use the calibrated span')
+assert(math.abs(lateral-10.25)<0.01,'Napalm width or center moved with the length calibration')
+
+-- Six complete flow wraps exercise moving light triangles, plus their edge phases.
+for i=0,360 do
+    FAKE_TIME=210+i*0.05;update()
+    local flow,sky=0,0
+    for _,s in ipairs(M.flow_seg) do
+        if s[1]=='flow' or s[1]:match('^sky%d$') then
+            if s[1]=='flow' then flow=flow+1 else sky=sky+1 end
+            for k=2,#s do if type(s[k])=='table' then
+                local t=along(s[k][1],s[k][2])
+                assert(t>=-bound-0.001 and t<=bound+0.001,
+                    'moving Napalm ground/sky geometry left the calibrated range')
+            end end
+        end
+    end
+    assert(flow>0 and sky>0,'Napalm moving ground/sky reference disappeared during a cycle')
+end
+assert(imp.p[1]==center[1] and imp.p[2]==center[2] and imp.p[3]==center[3]
+    and imp.heading[1]==heading[1] and imp.heading[2]==heading[2],
+    'Napalm length calibration moved its center or incoming heading')
+assert(M.type_profiles.bounds(18).lo==-60 and M.type_profiles.bounds(18).hi==60,
+    'Napalm calibration changed Airstrike bounds')
+apply('adapt_range',false);frames(45)
+local generic=0
+for _,s in ipairs(M.seg) do if s[1]=='ground' then
+    for k=2,3 do generic=math.max(generic,math.abs(along(s[k][1],s[k][2]))) end
+end end
+assert(generic>=99.9,'range-off failed to restore the generic guide')
+''')
+
     def test_controls_restore_and_independently_disable_names_and_ranges(self):
         replay(TYPES+FLAT+MENU+'''
 saved['eagle_direction_probe.adapt_range']=false

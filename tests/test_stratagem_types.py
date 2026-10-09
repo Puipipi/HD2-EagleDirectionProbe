@@ -17,11 +17,13 @@ class StratagemTypesTest(unittest.TestCase):
         self.run_lua('''
 local ids={3,18,30,38,65,126,133,140}
 for _,id in ipairs(ids) do assert(P.catalog[id] and P.catalog[id].tag) end
-local a,s,k,r=P.bounds(18),P.bounds(30),P.bounds(3),P.bounds(140)
+local a,s,k,r,n=P.bounds(18),P.bounds(30),P.bounds(3),P.bounds(140),P.bounds(133)
 assert(a.lo==-60 and a.hi==60 and a.half==10 and a.estimated)
 assert(s.lo==-5 and s.hi==55 and s.half==5)
 assert(k.shape=='circle' and k.radius==25 and k.estimated)
 assert(r.shape=='direction' and not r.estimated,'110mm invented a target footprint')
+assert(n.lo==-100/3 and n.hi==100/3 and n.half==10 and n.estimated,
+    'Napalm should use the user-calibrated 66.67 m envelope while preserving width')
 assert(P.bounds(nil).lo==-100 and P.bounds(999).half==6)
 ''')
 

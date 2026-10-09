@@ -26,10 +26,13 @@
   local visual light properties; existing headlamp instances/settings are untouched.
   Availability is checked before spawning. This is a prototype, not a permanent
   standalone-resource solution or a claim of compatibility with other headlamp versions.
-* Native light/unit API signatures were checked against the installed reference
-  and Autodesk's [Light API](https://help.autodesk.com/cloudhelp/ENU/Stingray-Help/lua_ref/obj_stingray_Light.html)
-  and [Unit API](https://help.autodesk.com/cloudhelp/ENU/Stingray-Help/lua_ref/obj_stingray_Unit.html).
-  Game brightness, projection direction and rendering cost remain unverified.
+* The adapter follows the installed controller's named `Unit.light` lookups and
+  `Light.set_enabled` use. It preserves the profile's authored cone, falloff and
+  render flags; optional `num_lights`, `has_light` and `update_unit` capabilities
+  are guarded. The rc9 game log showed that `Light.set_spot_angle_start` is not
+  available in this environment. Actual ground illumination, optical direction,
+  brightness and rendering cost remain unverified; the Stingray's blue ground-
+  marking effect has not been identified by this prototype.
 
 ## Read-only reference / 只读参考
 

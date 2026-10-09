@@ -11,7 +11,8 @@ end
 entry(18,'Eagle Airstrike','REF AIRSTRIKE',-60,60,10)
 entry(30,'Eagle Strafing Run','REF STRAFE',-5,55,5)
 entry(65,'Eagle Cluster Bomb','REF CLUSTER',-48,48,6)
-entry(133,'Eagle Napalm Airstrike','REF NAPALM',-50,50,10)
+-- User-calibrated reference: shorten the old 100 m envelope by 1/6 at each end.
+entry(133,'Eagle Napalm Airstrike','REF NAPALM',-100/3,100/3,10)
 entry(38,'Eagle Smoke Strike','REF SMOKE',-48,48,12)
 entry(126,'Eagle Gas Airstrike','REF GAS',-48,48,12)
 entry(3,'Eagle 500kg Bomb','REF 500KG',-25,25,25,'circle')

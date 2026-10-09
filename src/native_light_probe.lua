@@ -4,6 +4,11 @@
 local P={}
 local RESOURCE='content/helmet_headlamp/runtime_mode_profiles'
 local LIGHT='helmet_headlamp_task_fill'
+local FUNCTIONAL_LIGHTS={
+    'helmet_headlamp_task_fill','helmet_headlamp_task_soft_reach',
+    'helmet_headlamp_gameplay_fill','helmet_headlamp_gameplay_direction',
+}
+local MARKER_LIGHTS={'helmet_headlamp_default_task','helmet_headlamp_default_gameplay'}
 local function point(p)
     if type(p)~='table' then return false end
     for i=1,3 do
@@ -13,17 +18,24 @@ local function point(p)
 end
 
 function P.new(sr)
-    local required={Application={'worlds','can_get'},World={'spawn_unit','destroy_unit','update_unit'},
-        Unit={'alive','node','num_lights','has_light','light','set_local_position',
+    local required={Application={'worlds','can_get'},World={'spawn_unit','destroy_unit'},
+        Unit={'alive','node','light','set_local_position',
             'set_local_rotation','set_unit_visibility'},Quaternion={'axis_angle'},
-        Light={'set_enabled','set_color','set_spot_angle_start','set_spot_angle_end','set_falloff_end'}}
+        Light={'set_enabled','set_color'}}
+    local missing={}
     for namespace,names in pairs(required) do for _,name in ipairs(names) do
         if type(sr[namespace])~='table' or type(sr[namespace][name])~='function' then
-            return nil,namespace..'.'..name..' unavailable'
+            missing[#missing+1]=namespace..'.'..name
         end
     end end
     -- HD2 exposes Vector3 as a callable table, not a Lua function.
-    if not pcall(function() return sr.Vector3(0,0,0) end) then return nil,'Vector3 unavailable' end
+    if not pcall(function() return sr.Vector3(0,0,0) end) then
+        missing[#missing+1]='Vector3 callable'
+    end
+    if #missing>0 then
+        table.sort(missing)
+        return nil,'required APIs unavailable: '..table.concat(missing,', ')
+    end
     local self={rows={},count=0,status='idle',retry_at=0}
     local function live(world)
         if world==nil then return false end
@@ -39,9 +51,8 @@ function P.new(sr)
     end
     local function destroy(row,world_is_live)
         if not world_is_live or not alive(row.unit) then return end
-        for i=0,(row.lights or 0)-1 do
-            local ok,l=pcall(sr.Unit.light,row.unit,i)
-            if ok and l then pcall(sr.Light.set_enabled,l,false) end
+        for _,light in ipairs(row.lights or {}) do
+            if light then pcall(sr.Light.set_enabled,light,false) end
         end
         pcall(sr.World.destroy_unit,self.world,row.unit)
     end
@@ -53,30 +64,51 @@ function P.new(sr)
     end
     local function position(row,p)
         sr.Unit.set_local_position(row.unit,row.node,sr.Vector3(p[1],p[2],p[3]+12))
-        sr.World.update_unit(self.world,row.unit)
+        if type(sr.World.update_unit)=='function' then
+            pcall(sr.World.update_unit,self.world,row.unit)
+        end
         row.x,row.y,row.z=p[1],p[2],p[3]
     end
     local function create(p)
         local ok,unit=pcall(sr.World.spawn_unit,self.world,RESOURCE)
         if not ok or not unit then return nil,'helper spawn unavailable' end
-        local row={unit=unit}
+        local row={unit=unit,lights={}}
         local configured,reason=pcall(function()
             assert(alive(unit),'spawned helper unavailable')
             row.node=sr.Unit.node(unit,'StingrayEntityRoot')
             assert(type(row.node)=='number' and row.node>=0,'root node unavailable')
-            row.lights=sr.Unit.num_lights(unit)
-            assert(row.lights==5,'headlamp resource profile unavailable')
-            for i=0,4 do sr.Light.set_enabled(sr.Unit.light(unit,i),false) end
-            assert(sr.Unit.has_light(unit,LIGHT),'task light unavailable')
-            local light=sr.Unit.light(unit,LIGHT)
+            local resolved={}
+            for _,name in ipairs(FUNCTIONAL_LIGHTS) do
+                local ok,light=pcall(sr.Unit.light,unit,name)
+                assert(ok and light,name..' unavailable in headlamp resource profile')
+                resolved[name]=light
+                row.lights[#row.lights+1]=light
+            end
+            local light=resolved[LIGHT]
+            for _,name in ipairs(MARKER_LIGHTS) do
+                local should_resolve=true
+                if type(sr.Unit.has_light)=='function' then
+                    local checked,present=pcall(sr.Unit.has_light,unit,name)
+                    if checked then should_resolve=present==true end
+                end
+                if should_resolve then
+                    local ok,marker=pcall(sr.Unit.light,unit,name)
+                    if ok and marker then row.lights[#row.lights+1]=marker end
+                end
+            end
+            for _,owned_light in ipairs(row.lights) do
+                sr.Light.set_enabled(owned_light,false)
+            end
+            if type(sr.Unit.num_lights)=='function' then
+                local ok,count=pcall(sr.Unit.num_lights,unit)
+                assert(ok and count==5,'headlamp resource profile unavailable')
+            end
             -- This HD2 asset stores HDR radiance (its white task fill is 9000,
             -- 8550,7560 at intensity 1), rather than a normalized GUI colour.
             sr.Light.set_color(light,sr.Vector3(7000,120,180))
-            sr.Light.set_spot_angle_start(light,2*math.atan(8/12))
-            sr.Light.set_spot_angle_end(light,2*math.atan(16/12))
-            sr.Light.set_falloff_end(light,25)
-            if type(sr.Light.set_casts_shadows)=='function' then sr.Light.set_casts_shadows(light,false) end
-            if type(sr.Light.set_volumetric_enabled)=='function' then sr.Light.set_volumetric_enabled(light,false) end
+            -- Preserve this installed resource's authored cone, falloff and render flags.
+            -- These Light setters are not part of the APIs verified in the installed
+            -- headlamp controller, and partial cone writes could invert inner/outer.
             sr.Unit.set_unit_visibility(unit,false)
             -- Stingray units look along +Y; rotate the owned emitter toward -Z.
             sr.Unit.set_local_rotation(unit,row.node,

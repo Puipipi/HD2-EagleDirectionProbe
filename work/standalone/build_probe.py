@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc9'
+VERSION = '1.10.0-rc10'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -83,7 +83,11 @@ WHAT THIS IS
   Whole panels and attached names move forward at 10 m/s, using a separate 10 Hz
   mesh cache; intermediate arrow ticks reuse the full retained panel geometry.
   At the end, each whole plate/name wraps to the beginning with equal spacing.
-  NATIVE RED LIGHT PROTOTYPE: MOM 原生红色投光验证（需头灯资源） defaults OFF.
+  RC10 NATIVE LIGHT FIX: RC9's game log reported missing
+  Light.set_spot_angle_start before the helper could spawn. The prototype now
+  preserves the resource-authored cone/falloff, resolves four known functional
+  lights by name, and treats num_lights/has_light/update_unit as optional.
+  MOM 原生红色投光验证（需头灯资源） still defaults OFF.
   Requires the separately installed Helmet Headlamp 1.0.0 light resource, enabled
   through its mod-manager Default Mode resource option. No third-party assets or
   controller code are bundled. Normal direction guides do not need the headlamp.
@@ -96,8 +100,10 @@ WHAT THIS IS
   Creation is limited to one helper per frame, with no active-guide count cap.
   Stationary emitters receive no position/colour updates or extra terrain queries.
   Lights retire with guides, on disable, draw failure and shutdown. Scene teardown
-  never destroys a unit through a dead world. Real brightness, downward orientation
-  and GPU cost require a manual game test. Keep the prototype OFF after testing.
+  never destroys a unit through a dead world. Real illumination, optical axis,
+  brightness and GPU cost still require a manual game test. This does not claim
+  that the Stingray blue ground-marking implementation has been identified. Keep the prototype
+  OFF after testing.
   White borders/landing diamond stay static. Ground border/triangles now clear
   cached terrain by 0.08 m instead of 0.8 m; upright plates/diamond keep their old
   elevations. Coarse interpolation may still differ on uneven terrain.
@@ -124,7 +130,9 @@ WHAT THIS IS
   Empty/ambiguous results fall back after the bounded wait. Very late native
   records may still adapt later. Lost provisional beacons expire after 0.75 s
   and must settle/match afresh. A new throw never inherits a previous candidate.
-  REF labels identify estimated reference footprints. Multi-bomb strips change
+  Napalm's user-calibrated REF is 66.67 m long and 20 m wide, centered on the same
+  beacon with the same incoming heading; this is not a measured damage/fire boundary.
+  Other REF labels identify estimated reference footprints. Multi-bomb strips change
   length/width by type; strafe extends forward, 500kg uses a 25 m reference circle.
   These are NOT measured damage/safe boundaries. 110mm target remains unknown:
   its generic direction guide is retained, labelled 110MM TARGET ?.

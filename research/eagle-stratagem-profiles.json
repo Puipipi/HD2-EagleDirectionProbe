@@ -97,6 +97,12 @@
       "shape_suggestion": "transverse_persistent_fire_strip_separate_from_initial_blast",
       "shape_status": "suggestion_not_measured",
       "per_munition_radii": [{"stage": "immediate_explosion", "wiki_m": [2, 10, 15], "ct_m": [2, 10, 15], "ct_line": 846}],
+      "display_reference_calibration": {
+        "length_m": 66.66666666666667,
+        "width_m": 20,
+        "basis": "User calibration: shorten the previous 100 m reference by 1/6 at each end; keep the center and incoming heading unchanged.",
+        "measured_damage_or_fire_boundary": false
+      },
       "persistent_field_radii_m": null,
       "persistent_field_duration_s": null,
       "full_strike_dimensions_m": {"length": null, "width": null},
