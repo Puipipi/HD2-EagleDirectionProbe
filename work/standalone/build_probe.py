@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc11'
+VERSION = '1.10.0-rc15'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -48,6 +48,12 @@ EXTRA_SOURCES = {
     'mods/codex/eagle_stratagem_query': REPO / 'src/stratagem_query.lua',
     'mods/codex/eagle_stratagem_profiles': REPO / 'src/stratagem_profiles.lua',
     'mods/codex/eagle_native_light_probe': REPO / 'src/native_light_probe.lua',
+    'mods/codex/eagle_performance_clock': REPO / 'src/performance_clock.lua',
+    'mods/codex/eagle_cordon_font': REPO / 'src/cordon_font.lua',
+    'mods/codex/eagle_local_player_pose': REPO / 'src/local_player_pose.lua',
+    'mods/codex/eagle_cordon_view': REPO / 'src/cordon_view.lua',
+    'mods/codex/eagle_occlusion_outline': REPO / 'src/occlusion_outline.lua',
+    'mods/codex/eagle_terrain_grid': REPO / 'src/terrain_grid.lua',
 }
 
 SCRIPT_EXTENSIONS = ('.bat', '.cmd', '.ps1', '.vbs', '.js', '.exe', '.dll')
@@ -76,45 +82,85 @@ WHAT THIS IS
   Panels start 1.1 m above cached ground and are 1.35 m tall. Their size is fixed
   for a given name, independent of camera distance. Names are real filled strokes
   offset 4 cm outward from the plate, using the same GUI path as the plate.
-  RC9 solid plates carry readable names on both surfaces. Three complete plates
-  per long edge share one looping conveyor; columns of glyph corners share cached terrain
-  interpolation to offset the extra inner label work. Circular plate halves are
-  subdivided so opaque chords do not hide the inner letters.
+  Each of the six moving plates keeps one complete label on the side facing the
+  cached local-player pose. The 10 Hz panel rebuild samples the existing pose
+  resolver once; if pose is unknown, the last side is kept or one inner side is used.
+  Solid text keeps the verified single outward winding; line fallback uses the
+  same selected copy. Actual game material culling and text readability remain unverified.
   Whole panels and attached names move forward at 10 m/s, using a separate 10 Hz
   mesh cache; intermediate arrow ticks reuse the full retained panel geometry.
   At the end, each whole plate/name wraps to the beginning with equal spacing.
-  RC10 NATIVE LIGHT FIX: RC9's game log reported missing
+  RC10 NATIVE LIGHT COMPATIBILITY: RC9's game log reported missing
   Light.set_spot_angle_start before the helper could spawn. The prototype now
   preserves the resource-authored cone/falloff, resolves four known functional
   lights by name, and treats num_lights/has_light/update_unit as optional.
-  MOM 原生红色投光验证（需头灯资源） still defaults OFF.
+  MOM 原生紫色投光对照测试（需头灯资源） still defaults OFF. The optional
+  资源原始白光对照 mode skips color/intensity setters and rebuilds owned helpers.
   Requires the separately installed Helmet Headlamp 1.0.0 light resource, enabled
   through its mod-manager Default Mode resource option. No third-party assets or
   controller code are bundled. Normal direction guides do not need the headlamp.
-  Creates an OWN light-only helper 12 m above each landing point, with one downward
-  red spotlight. This validates native illumination near the beacon, not a precise
+  Creates an OWN light-only helper 12 m above each landing point, with the prototype's
+  existing spotlight rotation. The actual beam direction and ground illumination are not
+  validated; this is not a precise
   rectangular attack footprint or the Stingray's blue ground-marking effect.
   Original headlamp units/settings remain untouched. Missing resource/API means
   no spotlight; existing guides continue. Turn MOM off to remove owned lights.
   Native testing suppresses the old red face overlay for a clear comparison.
+  By default, the colour comparison changes only the owned light RGB to (1,0,1),
+  keeps intensity 7000, and leaves position, rotation and authored cone unchanged.
+  The optional 资源原始白光对照 skips both color and intensity setters and rebuilds
+  only owned helpers. Each world/mode captures one original/configured color,
+  intensity, world-position and root-forward readback on its first successful helper.
+  Getter failure is diagnostic only; root-forward does not prove the embedded beam axis.
+  RC12 already attempted World.update_unit optionally, so rc13 added failure detection
+  and readback; the cause of the invisible ground light remains unresolved.
+  Neither purple nor authored-color ground visibility is confirmed.
   Creation is limited to one helper per frame, with no active-guide count cap.
   Stationary emitters receive no position/colour updates or extra terrain queries.
+  The active target light receives one set_enabled(true) reassertion per render frame;
+  due/dirty synchronization and cleanup run first. Only owned helpers are touched.
   Lights retire with guides, on disable, draw failure and shutdown. Scene teardown
   never destroys a unit through a dead world. Real illumination, optical axis,
   brightness and GPU cost still require a manual game test. This does not claim
   that the Stingray blue ground-marking implementation has been identified. Keep the prototype OFF.
-  RC11 STARTUP DIAGNOSTIC: after manual import and full game restart, reaching the
-  main menu is enough to record a one-shot, type-only native-light API snapshot.
-  It does not spawn a helper or call Light getters/setters at startup. If the binding
-  is absent at addon load, nil is recorded; no global update hook is installed.
-  RC11 BLUE-BEACON FIX: only a positive two-snapshot match to a known Eagle
+  RC13 SAFETY AND DIAGNOSTICS: only a positive two-snapshot match to a known Eagle
   stratagem can bind the nearest aircraft or draw its ground, sky, cordon or native
   light guide. Unknown, unsupported, ambiguous or unavailable records remain
   candidates for polling and cannot borrow the nearest Eagle's heading. The separate
   aircraft arrow remains visible. A previously confirmed Eagle keeps its guide during
-  a temporary reader failure. Each tracked beacon record also gets an anonymous B#
-  episode id for event logs and JSON trace/motion fields. B# identifies the current
-  Lua tracking record, can change after cleanup/prune, and is not an engine Unit id.
+  temporary reader failure. Each beacon record gets an anonymous B# episode id in
+  event and JSON trace/motion diagnostics; it can change after cleanup/prune and is
+  not an engine Unit id. A one-shot startup
+  snapshot lists visible native-light API member types at the main menu; it does not
+  spawn a helper or call light getters/setters. After manual import and full restart,
+  inspect %LOCALAPPDATA%/CowboyBingus/Helldivers2/Logs/EagleDirectionProbe.log.
+  RC14 uses readable vector-stroke labels and one view-selected text copy per panel.
+  Real-game text visibility/depth and purple ground illumination remain unverified.
+  Native helpers use normalized colour plus intensity and report one-time owned-helper
+  readback. The head-up local-player DANGER/PATH? warning and its polling were removed;
+  cached player pose remains for selecting the visible text side and drawing self-test.
+  The native probe reasserts its owned target light once per rendered frame, after
+  due/dirty cleanup and synchronization. No other mod's light is touched.
+  No Runtime or active-guide count cap is added.
+  RC15 ground-border/strip vertices reuse axial stations from the existing cached terrain
+  grid, with no extra collision queries; the two-query/frame and 0.5 ms soft budget remain.
+  Main lines request depth testing; fill uses the existing world-GUI path, whose depth
+  behavior is not verified. Through-world OFF submits no extra x-ray outline. ON keeps
+  the GUI fill and adds a no-depth dashed component-outline pass without fill, scan-fill
+  rows, or glyph fragments. Offline checks verify line flags and cleanup, but GUI depth
+  ordering and pixel occlusion still need an in-game visual check. Normal visible text stays.
+  Guide-work timing counts full Lua and draw work on frames with guide geometry or owned
+  native lights; it is not a GPU/pixel visibility measure or game FPS. The 0.05 ms/frame
+  goal remains unmet. Paired offline figures are medians of three run means. For 1/4/8
+  guides with through-world OFF: rc14 0.0642/0.2457/0.4708 ms, rc15 0.0846/0.2969/
+  0.5065 ms (an 8-32% regression). RC15 ON medians are 0.2631/0.8352/1.7510 ms; old ON
+  forced a different line backend, so no ratio is claimed. These CPU-only
+  checks do not measure in-game FPS/GPU or prove pixel visibility. Purple/authored headlamp
+  behavior remains a manual game test.
+  The 330 offline tests pass. All 13 Lua payloads pass LuaJIT 2.1 compile and source gates;
+  terrain query/contract resources are byte-identical to v1.9.10.
+  MOM 详细采样记录 defaults OFF; enabling it restores per-sample JSONL and
+  once-per-call munition/idle-pose diagnostics, not required for visible guides.
   White borders/landing diamond stay static. Ground border/triangles now clear
   cached terrain by 0.08 m instead of 0.8 m; upright plates/diamond keep their old
   elevations. Coarse interpolation may still differ on uneven terrain.
@@ -158,8 +204,9 @@ WHAT THIS IS
   XYZ for creation and XZY for updates. Earlier tests stopped at the Lua wrapper
   and missed the shared native vertex writer. Material/depth still need validation.
   MOM: 真正面填充（测试） defaults ON in this candidate. Turn it OFF to restore
-  the line-fill renderer. Missing APIs also fall back. Enabling see-through forces
-  the line path; no unverified world-GUI depth override is used.
+  the line-fill renderer. Missing APIs also fall back. See-through keeps the existing
+  world-GUI fill and adds only dashed component outlines; no unverified world-GUI depth
+  override is used.
   Faces reuse retained IDs; unchanged immutable batches/records skip redundant
   validation and native updates. Cached panel templates merge collinear letter
   strokes and reuse triangle corners. Ground faces use
@@ -199,10 +246,13 @@ WHAT THIS IS
   their locally sampled surface (beacon height fallback), along the incoming axis.
   Sky brightness flows gently forward. Ground arrows travel at 10 m/s, with their
   geometry cached at 20 Hz separately from static outlines; no extra ray queries.
-  Mod Options Menu (optional): MODS > 飞鹰方向指引. Toggles: 透视显示 (OFF by
+  Mod Options Menu (optional): MODS > 飞鹰方向指引. The head-up local-player warning
+  was removed; old saved warn_player values are ignored. Toggles: 详细采样记录 (OFF),
+  透视显示 (OFF) by
   default), 飞鹰指示箭头 (ON), 天空方向箭头 (ON), 地面走廊边框 (ON),
   地面走廊三角 (ON), 红色全息警戒带 (ON), 真正面填充（测试） (ON),
-  具体飞鹰名称（测试） (ON), 按战备调整参考范围（测试） (ON).
+  具体飞鹰名称（测试） (ON), 按战备调整参考范围（测试） (ON),
+  原生紫色投光对照测试（OFF), 资源原始白光对照 (OFF).
   Ground-height slider 地面指引离地高度（厘米）: 0-100 cm in 1 cm steps,
   default 8 cm. Apply to update existing borders and ground triangles, and save.
   Sky arrows, plates and the landing diamond keep their independent heights.

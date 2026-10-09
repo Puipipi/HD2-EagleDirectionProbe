@@ -60,8 +60,20 @@ for i=0,59 do
             for k=2,3 do assert(math.abs(s[k][1])<=100,'moving panel left sampled corridor') end
         end
     end
-    assert(labels>=80 and labels<=160 and panels>0,'moving nameplates disappeared or exceeded the repeated-label budget')
-    assert(M.seg_count<=1250,'moving-panel cycle exceeded the single-strike geometry budget')
+    local font=require('mods/codex/eagle_cordon_font')
+    local text=M.show_type and M.type_profiles.catalog[18].panel_label or 'EAGLE ?'
+    local strokes=0
+    for i=1,#text do
+        local glyph=font.get(text:sub(i,i))
+        if glyph then strokes=strokes+#glyph end
+    end
+    assert(labels==6*strokes and panels>0,
+        'moving names must remain complete on all six panels: labels='..labels..' expected='..(6*strokes))
+    -- With names hidden, the readable generic vector label adds 42 lines on
+    -- this type-18 scene (186 versus 144 in the rc11 replay), with the original
+    -- 27-line headroom retained for this motion fixture.
+    assert(M.seg_count<=1250+42,
+        'moving-panel cycle exceeded the measured vector-font line budget: '..M.seg_count)
 end
 ''')
 

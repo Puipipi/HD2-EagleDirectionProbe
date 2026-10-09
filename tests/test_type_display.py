@@ -44,6 +44,21 @@ FLAT=SCENE.replace("return math.max(0, 30 - math.abs(x - 60)), 'HIT'","return 0,
 
 
 class TypeDisplayTest(unittest.TestCase):
+    def test_show_type_option_changes_only_panel_text(self):
+        replay(TYPES+FLAT+'''
+frames(60)
+local function count_text()
+    local n=0
+    for _,s in ipairs(M.flow_seg or {}) do if s[1]=='cordon_text' then n=n+1 end end
+    return n
+end
+assert(M.impacts[1].stratagem_type==18 and count_text()==270,
+    'enabled nameplates do not use the confirmed short Eagle label')
+M.show_type=false;M.geom_key=nil;M.flow_key=nil;M.cordon_key=nil
+FAKE_TIME=FAKE_TIME+0.11;update()
+assert(count_text()==186,'disabled type-name option did not restore generic EAGLE ? panels')
+''')
+
     def test_typed_airstrike_changes_only_reference_bounds_and_moving_label(self):
         replay(TYPES+FLAT+'''
 frames(50)

@@ -70,7 +70,7 @@ end
 assert(background and rim and letters,'opaque plate colours were not submitted')
 ''')
 
-    def test_opaque_plates_have_lettering_in_front_of_both_sides(self):
+    def test_opaque_plates_have_one_selected_lettering_copy(self):
         for circular in (False, True):
             with self.subTest(circular=circular):
                 replay(GUI+TYPES+FLAT+('type_rows[1].type=3\n' if circular else
@@ -86,16 +86,11 @@ for index,s in ipairs(M.flow_seg) do
         if depth< -0.03 then inside=inside+1 end
         assert(math.abs(math.abs(depth)-0.04)<0.001,
             'letter face overlaps opaque plate instead of sitting on its surface')
-        if not circle and depth>0 then
-            local back=M.flow_seg[index+1]
-            assert(back and back[1]=='cordon_text')
-            local dx=s[2][1]-s[3][1]
-            local back_dx=back[2][1]-back[3][1]
-            assert(math.abs(dx+back_dx)<0.001,'inside lettering is mirrored')
-        end
     end
 end
-assert(outside>0 and inside==outside,'opaque plate hides its inside label')
+assert(outside==0 or inside==0,
+    'each opaque plate must submit only the viewer-selected lettering side')
+assert(outside+inside>0,'selected lettering side was not submitted')
 if circle then
     for _,s in ipairs(M.flow_seg) do if s[1]=='cordon_text' then
         for k=2,4 do

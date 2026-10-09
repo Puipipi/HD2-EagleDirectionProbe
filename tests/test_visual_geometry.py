@@ -91,7 +91,13 @@ class VisualGeometryTest(unittest.TestCase):
         self.assertLessEqual(max(s[k][0] for s in air for k in (1, 2)), 200)
         self.assertTrue(any(s[0] == 'trail' for s in self.segments),
                         'the flown path needs its own dim colour')
-        self.assertLessEqual(len(self.segments), 1250, 'cordon/text plus enlarged silhouettes have a bounded per-pass cost')
+        text_lines = sum(s[0] == 'cordon_text' for s in self.segments)
+        self.assertEqual(text_lines, 186,
+                         'hidden type names must use six complete EAGLE ? labels')
+        # This renderer-only scene has show_type=false; preserve its original
+        # rc11 1250-line budget while checking the generic vector label is present.
+        self.assertLessEqual(len(self.segments), 1250,
+                             'cordon text plus silhouettes exceeded the measured line budget')
 
 
 if __name__ == '__main__':

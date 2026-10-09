@@ -22,6 +22,10 @@ local function point(p)
     return true
 end
 
+local function face_count(s)
+    return s[1]=='cordon_text' and 1 or 2
+end
+
 function R.new(sr)
     if type(sr)~='table' or not sr.Vector3 or not sr.World or not sr.Gui
         or not sr.Application or type(sr.Application.worlds)~='function'
@@ -52,25 +56,26 @@ function R.new(sr)
     end
 
     function self:submit(world,static,flow,colors)
-        if not live(sr,world) then self:release();return false,'world unavailable' end
         -- Submitted Lua batches are immutable. No native work or validation is
-        -- needed while both references and the live world remain unchanged.
-        if self.world==world and self.static==static and self.flow==flow then
+        -- needed while the world handle and both batch references remain unchanged.
+        if world~=nil and self.world==world and self.static==static and self.flow==flow then
             return true,self.count
         end
+        if not live(sr,world) then self:release();return false,'world unavailable' end
         -- Validate every changed face before crossing the native boundary;
         -- retained immutable records at the same slots were already checked.
         local total=0
         for _,batch in ipairs({static,flow}) do
             for _,s in ipairs(batch) do
                 if s[4] then
+                    local count=face_count(s)
                     local retained=self.world==world and self.records[total+1]==s
-                        and self.records[total+2]==s
+                        and (count==1 or self.records[total+2]==s)
                     if not retained and (not point(s[2]) or not point(s[3])
                         or not point(s[4]) or not colors[s[1]]) then
                         return false,'invalid face/color'
                     end
-                    total=total+2
+                    total=total+count
                 end
             end
         end
@@ -103,8 +108,11 @@ function R.new(sr)
         for _,batch in ipairs({static,flow}) do
             for _,s in ipairs(batch) do
                 if s[4] then
-                    if self.records[index+1]==s and self.records[index+2]==s then
-                        index=index+2
+                    local count=face_count(s)
+                    local double_sided=count==2
+                    if self.records[index+1]==s
+                        and (not double_sided or self.records[index+2]==s) then
+                        index=index+(double_sided and 2 or 1)
                     else
                         -- The reverse winding shares this triangle's three native
                         -- vertices, only inside this frame. No hash scratch maps or
@@ -120,7 +128,8 @@ function R.new(sr)
                                 sr.Vector3(c[1],c[2],c[3])
                         end
                         local color=colors[s[1]]
-                        face(va,vb,vc,color,s)
+                        if double_sided then
+                            face(va,vb,vc,color,s)
                         -- Normally IDs come in pairs. Keep creation/update encodings
                         -- separate even if a caller presents a partially filled pair.
                         if (self.ids[index+1]~=nil)~=updating then
@@ -133,6 +142,11 @@ function R.new(sr)
                             end
                         end
                         face(va,vc,vb,color,s)
+                        else
+                            -- Cordon text is authored inward on both sides of each panel.
+                            -- Retain only the reversed, outward-facing triangle.
+                            face(va,vc,vb,color,s)
+                        end
                     end
                 end
             end

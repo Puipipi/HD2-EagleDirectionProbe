@@ -38,7 +38,11 @@ class RuntimeRegressionTest(unittest.TestCase):
                 with patch.dict(os.environ, env):
                     lua = LuaRuntime(unpack_returned_tuples=True)
                     lua.execute('print = function() end')
-                    lua.execute(HARNESS.read_text(encoding='utf-8'))
+                    harness = HARNESS.read_text(encoding='utf-8').replace(
+                        "local M = rawget(_G, 'HD2EagleDirectionProbe')",
+                        "local M = rawget(_G, 'HD2EagleDirectionProbe')\n"
+                        "M.detailed_diagnostics=true")
+                    lua.execute(harness)
                     state = lua.globals().HD2EagleDirectionProbe
                     self.assertIsNotNone(state, 'replay must load the real source')
                     lua.globals().shutdown()

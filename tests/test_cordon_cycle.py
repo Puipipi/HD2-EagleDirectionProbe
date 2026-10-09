@@ -33,7 +33,7 @@ end
 
 class CordonCycleTest(unittest.TestCase):
     def test_panels_refresh_at_ten_hz_while_arrows_keep_twenty_hz_and_speed(self):
-        replay(GUI+TYPES+FLAT+'''
+        replay(GUI+TYPES+FLAT+PANELS+'''
 frames(60)
 local changed,old=0,nil
 local sky_changed,old_sky=0,nil
@@ -50,16 +50,29 @@ for frame=1,140 do
 end
 assert(changed>=9 and changed<=11,'panels rebuilt more often than ten Hz')
 assert(sky_changed>=19 and sky_changed<=21,'panel throttle changed arrow cadence')
-FAKE_TIME=240;update()
-local function center()
-    local lo,hi=math.huge,-math.huge
-    for _,s in ipairs(M.flow_seg) do if s[1]=='cordon_dim' and s[2][2]>0 then
-        for k=2,4 do lo,hi=math.min(lo,s[k][1]),math.max(hi,s[k][1]) end
-    end end
-    return (lo+hi)/2
+local function centers()
+    local intervals=panel_intervals(false,1)
+    local out={}
+    for _,p in ipairs(intervals) do out[#out+1]=(p[1]+p[2])/2 end
+    return out,intervals
 end
-local a=center();FAKE_TIME=240.2;update()
-assert(math.abs(center()-a-2)<0.001,'panel caching changed ten metres per second travel')
+FAKE_TIME=240;update()
+local before,intervals=centers()
+FAKE_TIME=240.2;update()
+local after=centers()
+local panel_width=intervals[1][2]-intervals[1][1]
+local period=(100/3-(-100/3))-panel_width
+assert(#before==3 and #after==3,'all three panels must remain in the moving sample')
+local used={}
+for _,a in ipairs(before) do
+    local match
+    for i,b in ipairs(after) do
+        local delta=(b-a+period/2)%period-period/2
+        if not used[i] and math.abs(delta-2)<0.001 then match=i;break end
+    end
+    assert(match,'a panel stopped moving ten metres per second modulo its wrap period')
+    used[match]=true
+end
 ''')
 
     def test_three_per_side_keep_equal_spacing_and_labels_over_full_wraps(self):

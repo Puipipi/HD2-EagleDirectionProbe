@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc11',
+    version = '1.10.0-rc15',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -60,6 +60,23 @@ local M = {
     draw_off = false,
     draw_last_ms = 0,
     draw_peak_ms = 0,
+    draw_total_ms = 0,
+    draw_timed_samples = 0,
+    draw_active_total_ms = 0,
+    draw_active_samples = 0,
+    draw_active_peak_ms = 0,
+    draw_idle_total_ms = 0,
+    draw_idle_samples = 0,
+    draw_idle_peak_ms = 0,
+    tick_total_ms = 0,
+    tick_timed_samples = 0,
+    tick_peak_ms = 0,
+    active_tick_total_ms = 0,
+    active_tick_samples = 0,
+    active_tick_peak_ms = 0,
+    idle_tick_total_ms = 0,
+    idle_tick_samples = 0,
+    idle_tick_peak_ms = 0,
     draw_checked = 0,
     draw_enabled = true,
     selftest = false,
@@ -83,6 +100,8 @@ local M = {
     show_ground_triangles = true,
     show_ground_area = false,
     show_native_light_probe = false,
+    native_light_authored_color = false,
+    detailed_diagnostics = false,
     ground_lift_cm = 8,
     show_cordon = true,
     solid_fill = true,      -- experimental retained world triangles; saved MOM switch
@@ -96,6 +115,17 @@ local M = {
     frame_slow = 0,
 }
 rawset(_G, MOD_KEY, M)
+
+local performance_clock
+do
+    local ok,module=pcall(require,'mods/codex/eagle_performance_clock')
+    if ok and type(module)=='table' and type(module.new)=='function' then
+        local made,clock=pcall(module.new)
+        if made and type(clock)=='table' and type(clock.now_ms)=='function' then
+            performance_clock=clock
+        end
+    end
+end
 
 -- ------------------------------------------------------------------ constants --
 -- Discovered offline from a 16 GB full process dump (2026-10-05 build) and from
@@ -259,7 +289,7 @@ local GROUND_BORDER_HALF_WIDTH_M = 0.25 -- 0.5 m white band, independent of airc
 -- height - option A's behaviour - so this degrades to the old flat strip, not to nothing.
 local GROUND_SAMPLE_R = 150    -- local heights; distant valleys should not flatten this strip
 local GROUND_SAMPLE_CAP = 48
-local GROUND_SEG_M = 10        -- coarse collision grid: follow large terrain features
+local GROUND_SEG_M = 10        -- display mesh subdivision; terrain sampling is planned separately
 local TERRAIN_PER_FRAME = 2    -- shared across all corridors; never multiplied per aircraft
 local TERRAIN_BUDGET_MS = 0.5  -- soft budget: checked after a query returns
 local FORWARD_M = 120           -- compact arrow close to the aircraft
@@ -619,10 +649,9 @@ end
 -- engine does expose a monotonic clock; this returns milliseconds from it and falls back to
 -- os.clock() only if the call is missing.
 local function clock_ms()
-    local app = sr and sr.Application
-    if type(app) == 'table' and type(app.time_since_launch) == 'function' then
-        local ok, value = pcall(app.time_since_launch)
-        if ok and type(value) == 'number' then return value * 1000 end
+    if performance_clock then
+        local ok,value=pcall(performance_clock.now_ms)
+        if ok and type(value)=='number' then return value end
     end
     return os.clock() * 1000
 end
@@ -780,6 +809,7 @@ end
 -- call now, under a time budget, and the cost of every key is logged, because the cost
 -- of these queries is the thing we do not actually know.
 local function identify_call(world, call, now)
+    if not M.detailed_diagnostics then return end
     if call.identified then return end
     call.identified = true
     local began = os.clock()
@@ -860,12 +890,14 @@ end
 
 local function update_tracks(eagle_entries)
     local now = os.clock()
+    local changed=false
     for _, entry in ipairs(eagle_entries) do
         local track = M.tracks[entry.unit]
         if track == nil then
             track = { trail = {}, heading = nil, seen = now }
             M.tracks[entry.unit] = track
             M.track_order[#M.track_order + 1] = entry.unit
+            changed=true
         end
         track.seen = now
         local p = not track.finished and world_position(entry.unit) or nil
@@ -874,12 +906,14 @@ local function update_tracks(eagle_entries)
             local last = trail[#trail]
             if last == nil then
                 trail[1] = { p[1], p[2], p[3] }
+                changed=true
             else
                 local dx, dy, dz = p[1] - last[1], p[2] - last[2], p[3] - last[3]
                 -- 0.5 m: below the aircraft's real motion at any speed it flies, above jitter.
                 if dx * dx + dy * dy + dz * dz > 0.25 then
                     trail[#trail + 1] = { p[1], p[2], p[3] }
                     if #trail > TRAIL_MAX then table.remove(trail, 1) end
+                    changed=true
                 end
             end
             local head = aircraft_forward(entry.unit)
@@ -890,6 +924,8 @@ local function update_tracks(eagle_entries)
                 if len > 0 then head = { dx / len, dy / len, dz / len } end
             end
             if head then
+                if track.heading==nil or track.heading[1]~=head[1]
+                    or track.heading[2]~=head[2] or track.heading[3]~=head[3] then changed=true end
                 track.heading = head
                 track.minimum_z = math.min(track.minimum_z or p[3], p[3])
                 track.first_z = track.first_z or p[3]
@@ -900,6 +936,7 @@ local function update_tracks(eagle_entries)
                     and p[3] - track.minimum_z >= DEPART_RISE_M then
                     track.depart_since = track.depart_since or now
                     if now - track.depart_since >= DEPART_HOLD_S then
+                        if not track.finished then changed=true end
                         track.finished = true
                     end
                 else
@@ -914,12 +951,14 @@ local function update_tracks(eagle_entries)
     for unit, track in pairs(M.tracks) do
         if (now - track.seen) > TRAIL_HOLD_S then
             M.tracks[unit] = nil
+            changed=true
         elseif not track.finished then
             live[#live + 1] = unit
         end
     end
     table.sort(live, function(a, b) return M.tracks[a].seen < M.tracks[b].seen end)
     M.track_order = live
+    if changed then M.geom_key=nil end
 end
 
 -- Which aircraft is most likely to be serving this impact. With two Eagles up there is no way
@@ -951,6 +990,7 @@ local function add_ground_sample(p, now)
         if (s[1] - p[1]) * (s[1] - p[1]) + (s[2] - p[2]) * (s[2] - p[2]) < 25 then
             if math.abs(s[1] - p[1]) + math.abs(s[2] - p[2]) + math.abs(s[3] - p[3]) > 0.05 then
                 M.ground_revision = (M.ground_revision or 0) + 1
+                M.geom_key=nil
             end
             s[1], s[2], s[3], s[4] = p[1], p[2], p[3], now
             return
@@ -958,6 +998,7 @@ local function add_ground_sample(p, now)
     end
     g[#g + 1] = { p[1], p[2], p[3], now }
     M.ground_revision = (M.ground_revision or 0) + 1
+    M.geom_key=nil
     if #g > GROUND_SAMPLE_CAP then table.remove(g, 1) end
 end
 
@@ -1028,6 +1069,7 @@ local function terrain_height(x, y, fallback)
 end
 
 
+local synchronize_render_world
 local function sample_body()
     if M.stopped then return end
     local now = os.clock()
@@ -1046,7 +1088,9 @@ local function sample_body()
     if now - M.installed_at < STARTUP_GRACE_S then return end
 
     local world = main_world()
+    synchronize_render_world(world)
     if world == nil then
+        M.last_tick_active=false
         if now >= (M.next_status or 0) then
             M.next_status = now + STATUS_S
             local worlds = count_worlds()
@@ -1075,19 +1119,48 @@ local function sample_body()
     if IN_SESSION_ONLY then
         live, why = in_session()
     end
+    M.last_tick_active=live==true
 
     -- A status line in every state, so a silent log can never again be ambiguous
     -- between "nothing to report" and "reading nothing".
     if now >= (M.next_status or 0) then
         M.next_status = now + STATUS_S
+        if performance_clock then
+            M.clock_source=performance_clock.source
+            M.clock_precise=performance_clock.precise
+            M.clock_resolution_ms=performance_clock.resolution_ms
+        end
         log(string.format('status: worlds=%s session=%s (%s) beacon_units=%d '
             .. 'aircraft_units=%d temp_bytes=%s last_tick=%.1fms samples=%d calls=%d '
-            .. 'backoff=x%d draw=%.2fms peak_draw=%.2fms frame_peak=%.1fms slow_frames=%d '
+            .. 'backoff=x%d draw=%.2fms avg_draw=%.3fms/%d peak_draw=%.2fms '
+            .. 'draw_active=%.3fms/%d draw_idle=%.3fms/%d '
+            .. 'tick_avg=%.3fms/%d tick_peak=%.2fms active_avg=%.3fms/%d '
+            .. 'idle_avg=%.3fms/%d guide_work_cpu=%.3fms/%d peak=%.2fms '
+            .. 'guide_draw_cpu=%.3fms/%d peak=%.2fms clock=%s/%s res=%.5gms frame_gap_peak=%.1fms slow_frames=%d '
             .. 'segments=%d submits=%d tracks=%d impacts=%d ground=%d',
             tostring(count_worlds()), tostring(live),
             tostring(why), #beacon_entries, #eagle_entries, tostring(M.last_temp_bytes),
             M.last_tick_ms or 0, M.samples, M.calls, M.backoff or 1,
-            M.draw_last_ms or 0, M.draw_peak_ms or 0, M.frame_peak_ms or 0,
+            M.draw_last_ms or 0,
+            (M.draw_total_ms or 0)/math.max(1,M.draw_timed_samples or 0),
+            M.draw_timed_samples or 0,M.draw_peak_ms or 0,
+            (M.draw_active_total_ms or 0)/math.max(1,M.draw_active_samples or 0),
+            M.draw_active_samples or 0,
+            (M.draw_idle_total_ms or 0)/math.max(1,M.draw_idle_samples or 0),
+            M.draw_idle_samples or 0,
+            (M.tick_total_ms or 0)/math.max(1,M.tick_timed_samples or 0),
+            M.tick_timed_samples or 0,M.tick_peak_ms or 0,
+            (M.active_tick_total_ms or 0)/math.max(1,M.active_tick_samples or 0),
+            M.active_tick_samples or 0,
+            (M.idle_tick_total_ms or 0)/math.max(1,M.idle_tick_samples or 0),
+            M.idle_tick_samples or 0,
+            (M.guide_work_total_ms or 0)/math.max(1,M.guide_work_samples or 0),
+            M.guide_work_samples or 0,M.guide_work_peak_ms or 0,
+            (M.guide_draw_total_ms or 0)/math.max(1,M.guide_draw_samples or 0),
+            M.guide_draw_samples or 0,M.guide_draw_peak_ms or 0,
+            tostring(M.clock_source or 'unavailable'),
+            tostring(M.clock_precise),M.clock_resolution_ms or 0,
+            M.frame_peak_ms or 0,
             M.frame_slow or 0, M.seg_count or 0, M.submits or 0, #M.track_order,
             #M.impact_order, #M.ground))
         emit({ kind = 'status', t = now,
@@ -1155,6 +1228,8 @@ local function sample_body()
                 -- landing without retiring its beacon; the next real settle must work.
                 if rec.strike_id and M.impacts[rec.strike_id] then
                     M.impacts[rec.strike_id]=nil
+                    M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil
+                    M.native_dirty=true
                     M.geom_key,M.flow_key=nil,nil
                     log(string.format('strip %d withdrawn: beacon resumed flight',rec.strike_id))
                     log_beacon_trace(rec, 'withdraw', rec.trace_call_id, p)
@@ -1214,12 +1289,16 @@ local function sample_body()
                 end
                 rec.guide_born=imp.born
                 M.impacts[rec.strike_id] = imp
+                M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil
+                M.native_dirty=true
                 log(string.format('strip %d landed: beacon=%s position=%.1f,%.1f,%.1f',
                     rec.strike_id,tostring(entry.unit),p[1],p[2],p[3]))
                 log_beacon_trace(rec, 'landed', rec.trace_call_id, p)
             else
                 imp.p = { p[1], p[2], p[3] }
                 imp.t = now
+                M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil
+                M.native_dirty=true
             end
         end
     end
@@ -1286,7 +1365,7 @@ local function sample_body()
     if active_call == nil then
         -- Idle: still record eagle sightings, because the Eagle orbits between calls
         -- and its pre-call heading is exactly what a prediction mod would need.
-        if #eagle_entries > 0 then
+        if M.detailed_diagnostics and #eagle_entries > 0 then
             emit({ kind = 'idle_eagle', t = now, eagles = json_points(eagle_entries, true) })
         end
         return
@@ -1298,19 +1377,20 @@ local function sample_body()
     active_call.samples = active_call.samples + 1
     active_call.last_seen = (#beacon_entries > 0) and now or active_call.last_seen
 
-    local ok, line = pcall(function()
-        return string.format(
-            '{"kind":"sample","t":%.3f,"call":%d,"n":%d,"beacons":%s,"eagles":%s}',
-            now, active_call.id, active_call.samples,
-            json_points(beacon_entries, true), json_points(eagle_entries, true))
-    end)
-    if ok and jsonl then
-        pcall(jsonl.write, jsonl, line .. '\n')
-        -- 0.1.0's jsonl was lost when the process died, because it was only flushed on
-        -- a clean shutdown. Flush as we go, so a crash still leaves the evidence.
-        if M.samples % 25 == 0 then pcall(jsonl.flush, jsonl) end
-    else
-        M.errors = M.errors + 1
+    if M.detailed_diagnostics then
+        local ok, line = pcall(function()
+            return string.format(
+                '{"kind":"sample","t":%.3f,"call":%d,"n":%d,"beacons":%s,"eagles":%s}',
+                now, active_call.id, active_call.samples,
+                json_points(beacon_entries, true), json_points(eagle_entries, true))
+        end)
+        if ok and jsonl then
+            pcall(jsonl.write, jsonl, line .. '\n')
+            -- Flush diagnostic traces incrementally so they survive a game crash.
+            if M.samples % 25 == 0 then pcall(jsonl.flush, jsonl) end
+        else
+            M.errors = M.errors + 1
+        end
     end
     M.samples = M.samples + 1
 
@@ -1357,8 +1437,28 @@ local function drawing_allowed(now)
     return true
 end
 
+-- Native line handles belong to their creation world. During a world transition the old
+-- wrapper may already be invalid even though Lua still holds it; only destroy through a
+-- world that the engine still reports as live. This check is used only on release/eviction.
+local function world_is_live(target)
+    if target==nil or type(sr.Application)~='table'
+        or type(sr.Application.worlds)~='function' then return false end
+    local ok,worlds=pcall(sr.Application.worlds)
+    if not ok or type(worlds)~='table' then return false end
+    for _,world in pairs(worlds) do if world==target then return true end end
+    return false
+end
+
+local function destroy_line_if_live(world,line)
+    if line~=nil and world_is_live(world)
+        and type(sr.World.destroy_line_object)=='function' then
+        pcall(sr.World.destroy_line_object,world,line)
+    end
+end
+
 local function release_line()
     if M.native_light_probe then pcall(M.native_light_probe.release,M.native_light_probe) end
+    M.native_light_count=0
     if M.solid_renderer then pcall(M.solid_renderer.release,M.solid_renderer) end
     M.solid_active,M.solid_triangles=false,0
     -- Destroy every line object we hold. Called on shutdown, on eviction, and when drawing
@@ -1368,9 +1468,13 @@ local function release_line()
     -- destroy pair is the one thing here that could make the corridor render unreliably.
     if M.lines then
         for world, line in pairs(M.lines) do
-            pcall(sr.World.destroy_line_object, world, line)
+            destroy_line_if_live(world,line)
         end
     end
+    if M.xray_line and M.xray_world then
+        destroy_line_if_live(M.xray_world,M.xray_line)
+    end
+    M.xray_line,M.xray_world=nil,nil
     M.lines, M.line_order, M.line, M.line_world = {}, {}, nil, nil
     M.seg, M.geom_key, M.need_submit = nil, nil, false
     M.static_line_plan,M.flow_line_plan=nil,nil
@@ -1378,6 +1482,16 @@ local function release_line()
     M.cordon_seg,M.cordon_key=nil,nil
     M.ground_seg,M.ground_geom_key=nil,nil
     M.seg_count = 0
+    M.occlusion_static_cache,M.occlusion_flow_cache=nil,nil
+    M.occlusion_combined_cache=nil
+    M.primary_outline_color_cache,M.secondary_outline_color_cache=nil,nil
+end
+
+local function release_xray_line()
+    if M.xray_line and M.xray_world then
+        destroy_line_if_live(M.xray_world,M.xray_line)
+    end
+    M.xray_line,M.xray_world=nil,nil
 end
 
 local LINE_CAP = 4
@@ -1392,12 +1506,23 @@ local function display_changed(key,value)
     elseif type(value)~='boolean' then return end
     if M[key]~=value then
         M[key]=value
+        if key=='through_world' then
+            M.occlusion_mode_changed=true
+            M.need_submit=true
+        end
+        if key=='native_light_authored_color' then
+            M.native_light_count=0
+            M.native_pending_spawn=true
+            M.native_dirty=true
+        end
         if key=='ground_lift_cm' then
             GROUND_LIFT_M=value/100
             M.ground_geom_key=nil
         end
+        if key=='through_world' then M.ground_geom_key=nil end
         if key=='solid_fill' then M.solid_failed=nil end
-        if key~='through_world' then M.geom_key,M.flow_key=nil,nil end
+        if key~='detailed_diagnostics' then M.geom_key,M.flow_key=nil,nil end
+        if key=='show_type' then M.cordon_key=nil end
     end
 end
 
@@ -1411,14 +1536,16 @@ local function menu_tick()
         or type(host.on_change)~='function' then return end
     if M.menu_candidate~=host then M.menu_candidate,M.menu_rows=host,{} end
     local rows={
+        {'detailed_diagnostics','详细采样记录',false,
+            '默认关闭每次采样JSONL、待机飞机位姿串行化与单次战备弹药资源扫描；不影响指引、分类、跟踪或地形采样。需要离线追踪数据时开启。点击应用后保存。'},
         {'show_type','具体飞鹰名称（测试）',true,
             '独立只读识别活跃战备；连续两次唯一位置匹配才显示名称，歧义保留 EAGLE ?。标签随光片移动。无需 Runtime。应用后保存。'},
         {'adapt_range','按战备调整参考范围（测试）',true,
             '落地稳定期提前识别；首次范围最多等待0.45秒确认，失败仍显示通用指引。扫射为前向窄带，区域空袭为不同长宽，500kg 为半径25m参考圆。REF 不是精确伤害或安全边界；110mm目标未知，仍仅指方向。应用后保存。'},
         {'solid_fill','真正面填充（测试）',true,
-            '用真实三角面填充箭头、落点菱形、白色边带、光片及文字。默认开启；关闭恢复线段填充；开启透视时自动使用线段。点击应用后保存。'},
+            '用真实三角面填充箭头、落点菱形、白色边带、光片及文字。默认开启；关闭恢复线段填充。开启透视时保留可见填充，并增加无深度虚线轮廓通道。点击应用后保存。'},
         {'through_world','透视显示',false,
-            '开启后，空中箭头和地面走廊会穿过地形及建筑显示。默认关闭；点击应用后生效并保存。'},
+            '关闭时主线段请求深度测试，不提交额外透视轮廓；填充沿用原有world GUI绘制。开启时保留GUI填充并叠加无深度虚线外轮廓；GUI实际遮挡仍需实机确认。默认关闭；点击应用后生效并保存。'},
         {'show_air','飞鹰指示箭头',true,
             '显示跟随飞鹰机头的指示箭头和较淡尾迹。独立于天空与地面指引，默认开启。点击应用后保存。'},
         {'show_sky','天空方向箭头',true,
@@ -1429,8 +1556,10 @@ local function menu_tick()
             '显示放大的贴地实心三角箭头，与天空箭头以 10 m/s 顺向流动。边框或三角开启时显示落点菱形。'},
         {'show_ground_area','地面红色范围光幕（测试）',false,
             '在已识别战备的参考范围内覆盖淡红色贴地三角面，不是真实投影灯光。默认关闭，可独立开启；需要按战备调整范围、真正面填充且关闭透视。只复用碰撞地形缓存，未知地面留空，随指引退场。未知类型及110mm不铺面积。REF 不是精确伤害或安全边界。点击应用后保存。'},
-        {'show_native_light_probe','原生红色投光验证（需头灯资源）',false,
-            '临时复用已安装并启用的 Helmet Headlamp 1.0 灯光资源，创建独立红色聚光灯向落点附近地面照射；不改头灯设置，不依赖 Runtime。仅验证真实受光，不代表完整打击范围或刺魟投影纹理。默认关闭；开启时抑制旧红色面片覆盖。资源/API缺失则跳过，随指引退场。应用后保存。'},
+        {'show_native_light_probe','原生紫色投光对照测试（需头灯资源）',false,
+            '临时复用已安装并启用的 Helmet Headlamp 1.0 灯光资源，创建自有原生聚光灯。默认使用紫色(1,0,1)、强度7000并逐帧保持启用；地面照明与光轴仍待实机确认。关闭此项时不创建helper；开启时抑制旧红色面片覆盖。资源/API缺失则跳过，随指引退场。应用后保存。'},
+        {'native_light_authored_color','资源原始白光对照',false,
+            '开启后新建的自有helper跳过颜色与强度setter，使用头灯资源自带颜色与强度；用于隔离setter覆写影响。切换时只释放并重建本mod拥有的helper，不改已有头灯实例。默认关闭，即使用紫色(1,0,1)、强度7000。'},
         {'ground_lift_cm','地面指引离地高度（厘米）',8,
             '调整走廊边框和地面三角高于缓存地形的距离：0～100厘米，每格1厘米，默认8厘米。红色光幕比箭头低2厘米，最低0厘米。0可能与地表闪烁；不影响天空箭头、光片和落点菱形。点击应用后生效并保存。',
             'slider',0,100,1},
@@ -1477,8 +1606,6 @@ local function menu_tick()
 end
 
 local function ensure_line(world)
-    if M.line_depth~=nil and M.line_depth~=M.through_world then release_line() end
-    M.line_depth=M.through_world
     if M.line and M.line_world == world then return M.line end
     M.lines = M.lines or {}
     M.line_order = M.line_order or {}
@@ -1489,10 +1616,8 @@ local function ensure_line(world)
         M.line, M.line_world = existing, world
         return existing
     end
-    -- disable_depth_test is documented by Autodesk World.create_line_object, and true is
-    -- used by the installed BTO hit marker and homing_stim compatibility marker.
-    -- This is warning visibility, not a substitute for a real terrain height query.
-    local ok, line = pcall(sr.World.create_line_object, world, M.through_world)
+    -- The primary pass always depth-tests. Through-world uses a separate line-only pass.
+    local ok, line = pcall(sr.World.create_line_object, world, false)
     if not ok or line == nil then return nil end
     M.lines[world] = line
     M.line_order[#M.line_order + 1] = world
@@ -1514,17 +1639,30 @@ local function ensure_line(world)
     while #M.line_order > LINE_CAP do
         local oldest = table.remove(M.line_order, 1)
         if oldest ~= world and M.lines[oldest] ~= nil then
-            pcall(sr.World.destroy_line_object, oldest, M.lines[oldest])
+            destroy_line_if_live(oldest,M.lines[oldest])
             M.lines[oldest] = nil
         end
     end
     return line
 end
 
+local function ensure_xray_line(world)
+    if M.xray_line and M.xray_world==world then return M.xray_line end
+    release_xray_line()
+    local ok,line=pcall(sr.World.create_line_object,world,true)
+    if not ok or line==nil then
+        M.occlusion_status='x-ray line object unavailable'
+        return nil
+    end
+    M.xray_line,M.xray_world=line,world
+    M.occlusion_status='x-ray outline pass active; pixel occlusion requires in-game check'
+    return line
+end
+
 -- ---------------------------------------------------------------- the geometry --
 local function solid_mode()
     local active=false
-    if M.solid_fill and not M.through_world and not M.solid_failed then
+    if M.solid_fill and not M.solid_failed then
         if not M.solid_renderer and not M.solid_checked then
             M.solid_checked=true
             local ok,module=pcall(require,'mods/codex/eagle_solid_renderer')
@@ -1609,8 +1747,11 @@ local function add_ribbon(seg, ax, ay, az, bx, by, bz, strands, kind)
     end
     for i = -half, half do
         local o = i * step
-        seg[#seg + 1] = { kind, { ax + px * o, ay + py * o, az },
-                          { bx + px * o, by + py * o, bz } }
+        local record={ kind, { ax + px * o, ay + py * o, az },
+                       { bx + px * o, by + py * o, bz } }
+        if M.through_world and strands>1 and math.abs(i)==half then record.outline_boundary=true
+        elseif M.through_world and strands>1 then record.scan_fill=true end
+        seg[#seg + 1] = record
     end
 end
 
@@ -1660,10 +1801,21 @@ local function add_filled_triangle(seg,tip,left,right,kind,spacing,surface)
             local za,zb=surface(a[1],a[2]),surface(b[1],b[2])
             a[3],b[3]=za and za+GROUND_LIFT_M,zb and zb+GROUND_LIFT_M
         end
-        if a[3] and b[3] then seg[#seg+1]={kind,a,b} end
+        if a[3] and b[3] then
+            local record={kind,a,b}
+            if M.through_world then
+                if i==rows then record.outline_boundary=true else record.scan_fill=true end
+            end
+            seg[#seg+1]=record
+        end
     end
-    seg[#seg+1]={kind,left,tip}
-    seg[#seg+1]={kind,tip,right}
+    if M.through_world then
+        seg[#seg+1]={kind,left,tip,outline_boundary=true}
+        seg[#seg+1]={kind,tip,right,outline_boundary=true}
+    else
+        seg[#seg+1]={kind,left,tip}
+        seg[#seg+1]={kind,tip,right}
+    end
 end
 
 -- Filled white heads, cyan accents. All stored geometry is plain Lua data.
@@ -1699,67 +1851,52 @@ local function add_direction_arrow(seg, p, head, forward, size)
     add_filled_triangle(seg,{tx,ty,tz},tip_a,tip_b,'air',0.7)
 end
 
--- The local player's unit, resolved with the calls HUD_Ballistic_Trajectory_Overlay uses: the
--- third-person avatar by resource, alive(), and player_number from its animation state machine
--- when more than one rig is present. No FFI, and no invented API.
+-- Resolve the local player from the peer-owned PlayerCall and its synchronized avatar, with
+-- the pose resolver's strict player-index fallback for builds where that chain is unavailable.
 --
 -- This matters twice over. It is the honest stand-in for the camera position, which the width
 -- scaling needs; and on the ship it is the one point guaranteed to be in front of the player, so
 -- the drawing self-test can be anchored somewhere that "I cannot see it" actually means something.
 local AVATAR_TP = 'content/fac_helldivers/cha_avatar/avatar_helldiver'
-
-local function unit_player_number(unit)
-    local u = sr.Unit
-    if type(u.has_animation_state_machine) ~= 'function'
-        or type(u.animation_has_variable) ~= 'function'
-        or type(u.animation_find_variable) ~= 'function'
-        or type(u.animation_get_variable) ~= 'function' then
-        return nil
-    end
-    local ok1, has = pcall(u.has_animation_state_machine, unit)
-    if not ok1 or has ~= true then return nil end
-    local ok2, found = pcall(u.animation_has_variable, unit, 'player_number')
-    if not ok2 or found ~= true then return nil end
-    local ok3, id = pcall(u.animation_find_variable, unit, 'player_number')
-    if not ok3 or id == nil then return nil end
-    local ok4, value = pcall(u.animation_get_variable, unit, id)
-    if not ok4 then return nil end
-    return value
-end
-
-local function local_player(world)
-    if world == nil then return nil end
-    local ok, units = pcall(units_by_resource, world, AVATAR_TP)
-    if not ok or type(units) ~= 'table' then return nil end
-    local single = nil
-    for _, unit in ipairs(as_list(units)) do
-        local alive_ok, alive = pcall(sr.Unit.alive, unit)
-        if alive_ok and alive == true then
-            if single == nil then
-                single = unit
-            else
-                -- More than one rig: keep only the one whose player_number matches the first.
-                local want = unit_player_number(single)
-                if want ~= nil and unit_player_number(unit) == want then
-                    -- still ambiguous, so refuse rather than guess
-                    return nil
-                end
-            end
+local local_pose_resolver
+do
+    local ok,module=pcall(require,'mods/codex/eagle_local_player_pose')
+    if ok and type(module)=='table' and type(module.new)=='function' then
+        local made,resolver=pcall(module.new,sr,{avatar_units=function(world)
+            M.reads=M.reads+1
+            local ok,units=pcall(sr.World.units_by_resource,world,AVATAR_TP)
+            if not ok then error('AVATAR_ENUMERATION_READ_FAILED') end
+            if units==nil then error('AVATAR_ENUMERATION_UNAVAILABLE') end
+            return as_list(units)
+        end})
+        if made and type(resolver)=='table' and type(resolver.sample)=='function' then
+            local_pose_resolver=resolver
         end
     end
-    return single
 end
 
-local function player_position(world)
-    local unit = local_player(world)
-    if unit == nil then return nil end
-    return world_position(unit)
+local function player_position(world,now)
+    if not local_pose_resolver then return nil,'local player resolver unavailable',nil end
+    local ok,position,status,source=pcall(local_pose_resolver.sample,local_pose_resolver,
+        world,now or clock_ms()/1000)
+    if not ok or type(position)~='table' then return nil,status or 'local player pose unknown',nil end
+    local x,y,z=position.x,position.y,position.z
+    if type(x)~='number' or type(y)~='number' or type(z)~='number' then
+        return nil,status or 'local player pose invalid',nil
+    end
+    return {x,y,z},status,source
 end
 
 local GENERIC_BOUNDS={shape='direction',lo=-100,hi=100,half=6,estimated=false}
 local function confirmed_guide(imp)
     return imp~=nil and M.type_profiles~=nil and M.type_profiles.catalog~=nil
         and M.type_profiles.catalog[imp.stratagem_type]~=nil
+end
+
+local CORDON_VIEW
+do
+    local ok,module=pcall(require,'mods/codex/eagle_cordon_view')
+    if ok and type(module)=='table' and type(module.choose)=='function' then CORDON_VIEW=module end
 end
 local function release_track_target_if_unused(unit,skip_id)
     if unit==nil then return end
@@ -1814,6 +1951,8 @@ local function type_tick(world,now)
     if M.type_world~=world then
         M.type_world,M.type_provider,M.type_epoch=world,nil,nil
         for _,imp in pairs(targets) do imp.stratagem_type,imp.type_pending,imp.type_epoch=nil,nil,nil end
+        M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil
+        M.native_dirty=true
     end
     if not M.type_provider and now>=(M.type_retry_at or 0) then
         local ok,provider=pcall(function()
@@ -1835,7 +1974,7 @@ local function type_tick(world,now)
     if epoch then M.type_epoch=tostring(world)..':'..epoch end
     if M.type_profiles then
         local changed=M.type_profiles.associate(targets,rows,now,M.type_epoch or tostring(world))
-        if changed>0 then M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil end
+        if changed>0 then M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil;M.native_dirty=true end
         for id,imp in pairs(M.impacts) do
             local confirmed=confirmed_guide(imp)
             if confirmed and not imp.heading then
@@ -1869,6 +2008,13 @@ end
 -- Collision grids belong to the strike, so retiring a strike also retires its work/cache.
 -- Height queries are independent of air-arrow geometry rebuilds and run at most twice per
 -- frame across all strips. A completed, stationary grid generates no further queries.
+local TERRAIN_GRID
+do
+    local ok,module=pcall(require,'mods/codex/eagle_terrain_grid')
+    if ok and type(module)=='table' and type(module.plan)=='function'
+        and type(module.height)=='function' then TERRAIN_GRID=module end
+end
+
 local function collision_grid(imp)
     local head=imp.heading
     if not head then return nil end
@@ -1878,22 +2024,49 @@ local function collision_grid(imp)
     local g=imp.terrain
     local now=os.clock()
     local extent=display_bounds(imp)
-    local width=math.max(GROUND_TRUE_HALF_M,extent.half+GROUND_BORDER_HALF_WIDTH_M+0.25)
+    local cached=imp.terrain_plan
+    local plan
+    if cached and cached.type==imp.stratagem_type and cached.adaptive==M.adapt_range
+        and cached.shape==extent.shape and cached.lo==extent.lo and cached.hi==extent.hi
+        and cached.half==extent.half and cached.radius==extent.radius then
+        plan=cached.plan
+    elseif TERRAIN_GRID then
+        plan=TERRAIN_GRID.plan(extent,GROUND_BORDER_HALF_WIDTH_M)
+        if plan then
+            imp.terrain_plan={type=imp.stratagem_type,adaptive=M.adapt_range,
+                shape=extent.shape,lo=extent.lo,hi=extent.hi,half=extent.half,
+                radius=extent.radius,plan=plan}
+        end
+    end
+    if not plan then return nil end
     local moved=g and (g.x-imp.p[1])^2+(g.y-imp.p[2])^2>4
     -- Ignore small steering corrections. At least half a second between refreshes prevents
     -- continuous manoeuvres from repeatedly restarting work before the far end is sampled.
     local turn=g and hx*g.hx+hy*g.hy<0.966
-    if not g or g.half~=width or ((moved or turn) and now-g.born>=0.5) then
-        g={x=imp.p[1],y=imp.p[2],z=imp.p[3],hx=hx,hy=hy,half=width,
-            step=GROUND_SEG_M,n=math.ceil(2*GROUND_HALF_M/GROUND_SEG_M),
+    if not g or g.plan_signature~=plan.signature or ((moved or turn) and now-g.born>=0.5) then
+        g={x=imp.p[1],y=imp.p[2],z=imp.p[3],hx=hx,hy=hy,
+            lo=plan.lo,hi=plan.hi,width=plan.width,half=plan.width,n=plan.n,rows=plan.rows,
+            row_offsets=plan.row_offsets,plan_signature=plan.signature,
             h={},order={},cursor=1,born=now}
-        local mid=g.n/2
+        if type(TERRAIN_GRID.bind)=='function' then
+            g.sampler=TERRAIN_GRID.bind(g)
+        end
+        -- The sampling domain can be asymmetric (for example the 110mm direction-only
+        -- reference). Start at the axial station nearest the strike, then expand outward.
+        local mid=math.floor((0-g.lo)*g.n/(g.hi-g.lo)+0.5)
+        mid=math.max(0,math.min(g.n,mid))
+        g.origin_k=mid
+        local midrow=(g.rows+1)/2
         local function column(k)
             if k<0 or k>g.n then return end
-            for _,row in ipairs({2,1,3}) do g.order[#g.order+1]={k,row} end
+            g.order[#g.order+1]={k,midrow}
+            for offset=1,midrow-1 do
+                g.order[#g.order+1]={k,midrow-offset}
+                g.order[#g.order+1]={k,midrow+offset}
+            end
         end
         column(mid)
-        for i=1,mid do column(mid+i);column(mid-i) end
+        for i=1,math.max(mid,g.n-mid) do column(mid+i);column(mid-i) end
         imp.terrain=g
         M.ground_revision=(M.ground_revision or 0)+1
     end
@@ -1902,26 +2075,12 @@ end
 
 local function collision_height(imp,x,y)
     local g=imp.terrain
-    if not g then return nil end
+    if not g or not TERRAIN_GRID then return nil end
     local dx,dy=x-g.x,y-g.y
-    local u=(dx*g.hx+dy*g.hy+GROUND_HALF_M)/g.step
-    local v=(-dx*g.hy+dy*g.hx+g.half)/g.half
-    if u< -0.0001 or u>g.n+0.0001 or v< -0.0001 or v>2.0001 then return nil end
-    u,v=math.max(0,math.min(g.n,u)),math.max(0,math.min(2,v))
-    local i,j=math.min(g.n-1,math.floor(u)),math.min(1,math.floor(v))
-    local a,b=u-i,v-j
-    -- This hot path runs for both ends of every filled ground row. Scalar weights
-    -- avoid five temporary tables per interpolation, with identical missing-hit rules.
-    local base=i*3+j+1
-    local wa,wb,wc,wd=(1-a)*(1-b),a*(1-b),(1-a)*b,a*b
-    local ha,hb,hc,hd=g.h[base],g.h[base+3],g.h[base+1],g.h[base+4]
-    if wa>0.000001 and type(ha)~='number'
-        or wb>0.000001 and type(hb)~='number'
-        or wc>0.000001 and type(hc)~='number'
-        or wd>0.000001 and type(hd)~='number' then return nil end
-    local sum=(wa>0.000001 and ha*wa or 0)+(wb>0.000001 and hb*wb or 0)
-        +(wc>0.000001 and hc*wc or 0)+(wd>0.000001 and hd*wd or 0)
-    return sum
+    local along=dx*g.hx+dy*g.hy
+    local lateral=-dx*g.hy+dy*g.hx
+    if type(g.sampler)=='function' then return g.sampler(along,lateral) end
+    return TERRAIN_GRID.height(g,along,lateral)
 end
 
 local function terrain_tick()
@@ -1940,6 +2099,10 @@ local function terrain_tick()
     if M.terrain_world~=world then
         M.terrain_world,M.terrain_provider=world,nil
         for _,imp in pairs(M.impacts) do imp.terrain=nil end
+        M.ground_seg,M.ground_geom_key=nil,nil
+        M.ground_revision=(M.ground_revision or 0)+1
+        M.geom_key,M.flow_key=nil,nil
+        M.terrain_dirty,M.terrain_flush_at=false,0
     end
     if not M.terrain_provider then
         local ok,provider=pcall(function()
@@ -1973,7 +2136,8 @@ local function terrain_tick()
         local item=g.order[g.cursor]
         if item then
             local k,row=item[1],item[2]
-            local t,o=-GROUND_HALF_M+k*g.step,(row-2)*g.half
+            local t=g.lo+(g.hi-g.lo)*k/g.n
+            local o=g.row_offsets[row]
             local x,y=g.x+g.hx*t-g.hy*o,g.y+g.hy*t+g.hx*o
             local unit=imp.aircraft or imp.beacon
             -- Confirmed beacons are the normal source before aircraft association. A manual
@@ -1998,15 +2162,18 @@ local function terrain_tick()
                 M.terrain_active=true
                 M.terrain_status='active'
             end
-            if k==g.n/2 and row==2 then height=g.z end -- actual settled beacon is authoritative
-            g.h[k*3+row]=type(height)=='number' and height or false
+            local along=g.lo+(g.hi-g.lo)*k/g.n
+            if k==g.origin_k and row==(g.rows+1)/2 and math.abs(along)<1e-9 then
+                height=g.z -- exact impact sample is authoritative; nearby stations are not
+            end
+            g.h[k*g.rows+row]=type(height)=='number' and height or false
             g.cursor=g.cursor+1
             M.terrain_dirty=true
             if height then M.terrain_hits=(M.terrain_hits or 0)+1 end
             if not g.order[g.cursor] then
                 M.terrain_flush_at=0
-                log(string.format('terrain strip ready: %d samples, %.2fs; coarse 10m grid',
-                    #g.order,now-g.born))
+                log(string.format('terrain strip ready: %d samples, %.2fs; %dx%d display grid',
+                    #g.order,g.n,g.rows,now-g.born))
             end
             if clock_ms()-began>=TERRAIN_BUDGET_MS then break end
         end
@@ -2144,10 +2311,23 @@ local function build_geometry(ground_key)
         local function surface_z(x,y)
             return ground_surface_z(impact,x,y)
         end
+        local stations=TERRAIN_GRID and impact.terrain
+            and TERRAIN_GRID.stations(impact.terrain,bounds.lo,bounds.hi) or nil
+        if not stations then
+            stations={}
+            local fallback_steps=math.max(1,math.ceil((bounds.hi-bounds.lo)/GROUND_SEG_M))
+            for k=0,fallback_steps do
+                stations[#stations+1]=bounds.lo+(bounds.hi-bounds.lo)*k/fallback_steps
+            end
+        end
+        local steps=math.max(1,#stations-1)
         local function stroke(kind, a, b, strands, upright)
             if not a or not b then return end
             local dx,dy=b[1]-a[1],b[2]-a[2]
-            local count=upright and 1 or math.max(1,math.ceil(math.sqrt(dx*dx+dy*dy)/GROUND_SEG_M-1e-8))
+            local across_step=impact.terrain and impact.terrain.rows>1
+                and 2*half/(impact.terrain.rows-1) or GROUND_SEG_M
+            local count=upright and 1 or math.max(1,math.ceil(math.sqrt(dx*dx+dy*dy)
+                /math.max(0.01,math.min(GROUND_SEG_M,across_step))-1e-8))
             local prev=a
             for i=1,count do
                 local v=b
@@ -2173,8 +2353,6 @@ local function build_geometry(ground_key)
             if z==nil then return nil end
             return { x, y, z + (lift or GROUND_LIFT_M) }
         end
-
-        local steps = math.max(1, math.ceil((bounds.hi-bounds.lo) / GROUND_SEG_M))
 
         -- Optional static reference fill. Only known collision heights are suitable
         -- for a broad translucent surface: never bridge missing hits with beacon Z.
@@ -2212,7 +2390,7 @@ local function build_geometry(ground_key)
                 local previous={}
                 for k=0,steps do
                     local current={}
-                    local t=bounds.lo+(bounds.hi-bounds.lo)*k/steps
+                    local t=stations[k+1]
                     for j=0,across do current[j+1]=at(t,-half+2*half*j/across,lift) end
                     if k>0 then for j=1,across do
                         add_quad(seg,previous[j],current[j],current[j+1],previous[j+1],'area')
@@ -2237,8 +2415,7 @@ local function build_geometry(ground_key)
                 else
                     for _,side in ipairs({-1,1}) do
                         for k=1,steps do
-                            local a=bounds.lo+(bounds.hi-bounds.lo)*(k-1)/steps
-                            local b=bounds.lo+(bounds.hi-bounds.lo)*k/steps
+                            local a,b=stations[k],stations[k+1]
                             add_quad(seg,at(a,side*half-w),at(b,side*half-w),
                                 at(b,side*half+w),at(a,side*half+w),c)
                         end
@@ -2271,7 +2448,7 @@ local function build_geometry(ground_key)
                     local o=side*half+lane*GROUND_BORDER_HALF_WIDTH_M
                     local prev=nil
                     for k=0,steps do
-                        local t=bounds.lo+(bounds.hi-bounds.lo)*k/steps
+                        local t=stations[k+1]
                         local v=at(t,o)
                         if prev and v then seg[#seg+1]={c,prev,v} end
                         prev=v
@@ -2323,7 +2500,7 @@ local function build_geometry(ground_key)
         local aircraft_seg=seg
         seg={}
         for _, imp in pairs(M.impacts) do
-            if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type]
+            if M.type_epoch~=nil and M.type_profiles and M.type_profiles.catalog[imp.stratagem_type]
                 and imp.heading and (M.show_ground_border or M.show_ground_triangles
                 or (M.show_ground_area and M.solid_active)) then
                 add_strip(imp, imp.heading)
@@ -2340,24 +2517,8 @@ local function build_geometry(ground_key)
 end
 
 -- Constant stroke data is shared by all impacts and animation buckets.
-local CORDON_STROKES={
-    {0,1,0.6,1},{0,1,0,0.5},{0.6,1,0.6,0.5},
-    {0,0.5,0.6,0.5},{0,0.5,0,0},{0.6,0.5,0.6,0},
-    {0,0,0.6,0},{0.3,0.5,0.3,0.2},{0.28,0.02,0.32,0.02},
-    {0,1,0.6,0},{0,0,0.6,1},{0.3,1,0.3,0},
-    {0,0.5,0.6,1},{0,0.5,0.6,0},{0.3,0.5,0.6,0},
-    {0,1,0.3,0.5},{0.3,0.5,0.6,1},
-}
-local CORDON_GLYPHS={E={1,2,4,5,7},A={1,2,3,4,5,6},
-    G={1,2,4,5,6,7},L={2,5,7},['?']={1,3,4,8,9},
-    B={2,5,4,6,7,1,3},C={1,2,5,7},D={1,2,3,5,6,7},F={1,2,4,5},
-    H={2,3,4,5,6},I={1,12,7},J={3,6,7,5},K={2,5,13,14},M={2,5,3,6,16,17},
-    N={2,5,3,6,10},O={1,2,3,5,6,7},P={1,2,3,4,5},Q={1,2,3,5,6,7,15},
-    R={1,2,3,4,5,15},S={1,2,4,6,7},T={1,12},U={2,3,5,6,7},V={2,3,11},
-    W={2,3,5,6,10,11},X={10,11},Y={16,17,8},Z={1,11,7},
-    ['0']={1,2,3,5,6,7},['1']={3,6},['2']={1,3,4,5,7},['3']={1,3,4,6,7},
-    ['4']={2,3,4,6},['5']={1,2,4,6,7},['6']={1,2,4,5,6,7},['7']={1,3,6},
-    ['8']={1,2,3,4,5,6,7},['9']={1,2,3,4,6,7}}
+-- Cached original vector strokes; callers copy them into frame geometry.
+local CORDON_FONT=require('mods/codex/eagle_cordon_font')
 
 -- Templates contain only Lua coordinates, never frame-arena vectors or colours.
 -- A panel carries its name for its entire transit; no near-ball label reassignment.
@@ -2365,8 +2526,8 @@ local CORDON_TEMPLATES={}
 local function cordon_template(text,solid,curved)
     local key=text..tostring(solid)..tostring(curved)
     if CORDON_TEMPLATES[key] then return CORDON_TEMPLATES[key] end
-    local pitch,height=0.64,0.8
-    local width=(#text-1)*pitch+0.48
+    local pitch,height=0.75,0.95
+    local width=(#text-1)*pitch+0.6
     local extent=math.max(3.6,width/2+0.75)
     local template={extent=extent,shapes={}}
     local shapes=template.shapes
@@ -2418,12 +2579,12 @@ local function cordon_template(text,solid,curved)
     stroke('cordon',-extent+cut,top,-extent+1.05,top,0.035,0.015)
     stroke('cordon',extent-1.05,bottom,extent-cut,bottom,0.035,0.015)
     for i=1,#text do
-        local glyph=CORDON_GLYPHS[text:sub(i,i)]
+        local glyph=CORDON_FONT.get(text:sub(i,i))
         if glyph then
             -- Adjacent collinear half-strokes become one filled bar (E/A/H...).
             local bars={}
-            for _,index in ipairs(glyph) do
-                local v=CORDON_STROKES[index]
+            for _,stroke_data in ipairs(glyph) do
+                local v={stroke_data.x0,stroke_data.y0,stroke_data.x1,stroke_data.y1}
                 local merged=false
                 for _,b in ipairs(bars) do
                     if v[1]==v[3] and b[1]==b[3] and v[1]==b[1]
@@ -2436,8 +2597,8 @@ local function cordon_template(text,solid,curved)
                 if not merged then bars[#bars+1]={v[1],v[2],v[3],v[4]} end
             end
             for _,v in ipairs(bars) do
-            stroke('cordon_text',-width/2+(i-1)*pitch+v[1]*height,0.57+v[2]*height,
-                -width/2+(i-1)*pitch+v[3]*height,0.57+v[4]*height,0.028,0.04)
+            stroke('cordon_text',-width/2+(i-1)*pitch+v[1]*height,0.48+v[2]*height,
+                -width/2+(i-1)*pitch+v[3]*height,0.48+v[4]*height,0.028,0.04)
             end
         end
     end
@@ -2469,9 +2630,12 @@ local function cordon_template(text,solid,curved)
     return template
 end
 
-local function add_cordon_panels(seg,imp,hx,hy,distance)
+local function add_cordon_panels(seg,imp,hx,hy,distance,viewer_p)
     local bounds=display_bounds(imp)
-    local template=cordon_template(type_label(imp),M.solid_active,bounds.shape=='circle')
+    local def=M.type_profiles and M.type_profiles.catalog[imp.stratagem_type]
+    local panel_label=M.show_type and def and def.panel_label or 'EAGLE ?'
+    local template=cordon_template(panel_label,M.solid_active,
+        bounds.shape=='circle')
     local lo,hi=bounds.lo,bounds.hi
     if bounds.shape=='circle' then lo,hi=-math.pi*bounds.radius/2,math.pi*bounds.radius/2 end
     -- Three complete plates on each long edge, with a common conveyor phase.
@@ -2481,7 +2645,10 @@ local function add_cordon_panels(seg,imp,hx,hy,distance)
     local spacing=travel/3
     local phase=distance%spacing
     local start=lo+template.extent+phase
+    imp.cordon_view_sides=imp.cordon_view_sides or {}
     for _,side in ipairs({-1,1}) do
+        local side_choices=imp.cordon_view_sides[side]
+        if not side_choices then side_choices={};imp.cordon_view_sides[side]=side_choices end
         local function at(t,depth)
             local along,lateral=t,side*(bounds.half+depth)
             if bounds.shape=='circle' then
@@ -2494,12 +2661,28 @@ local function add_cordon_panels(seg,imp,hx,hy,distance)
         end
         for index=0,2 do
             local center=start+index*spacing
+                local theta=bounds.shape=='circle' and center/bounds.radius or 0
+                local along=bounds.shape=='circle' and bounds.radius*math.sin(theta) or center
+                local lateral=bounds.shape=='circle'
+                    and side*bounds.radius*math.cos(theta) or side*bounds.half
+                local center_x=imp.p[1]+hx*along-hy*lateral
+                local center_y=imp.p[2]+hy*along+hx*lateral
+                local normal_x,normal_y
+                if bounds.shape=='circle' then
+                    normal_x,normal_y=center_x-imp.p[1],center_y-imp.p[2]
+                else normal_x,normal_y=-hy*side,hx*side end
+                local last_side=side_choices[index]
+                local selected=CORDON_VIEW and CORDON_VIEW.choose(viewer_p,
+                    {center_x,center_y,imp.p[3]}, {normal_x,normal_y,0},last_side) or nil
+                if selected~='outer' and selected~='inner' then selected=last_side end
+                if selected~='outer' and selected~='inner' then selected='inner' end
+                side_choices[index]=selected
                 local xs,ys,zs,ixs,iys,izs={},{},{},{},{},{}
                 for i,c in ipairs(template.columns) do
                     xs[i],ys[i],zs[i]=at(center-side*c[1],c[2])
-                    if M.solid_active and c.text then
-                        -- An opaque plate needs a name on each surface. Reverse
-                        -- the along coordinate so the inside name reads normally.
+                    if c.text and selected=='inner' then
+                        -- Reverse the along coordinate so the inward-facing
+                        -- surface's single selected name reads normally.
                         ixs[i],iys[i],izs[i]=at(center+side*c[1],-c[2])
                     end
                 end
@@ -2512,21 +2695,19 @@ local function add_cordon_panels(seg,imp,hx,hy,distance)
                     end
                 end
                 for _,shape in ipairs(template.shapes) do
-                    local a,b=vertices[shape[2]],vertices[shape[3]]
+                    local text_vertices=selected=='inner' and inner_vertices or vertices
+                    local source=shape[1]=='cordon_text' and text_vertices or vertices
+                    local a,b=source[shape[2]],source[shape[3]]
                     if shape[4] then
-                        local c=vertices[shape[4]]
+                        local c=source[shape[4]]
                         if a and b and c then seg[#seg+1]={shape[1],a,b,c} end
-                        if shape[1]=='cordon_text' then
-                            a,b,c=inner_vertices[shape[2]],inner_vertices[shape[3]],inner_vertices[shape[4]]
-                            if a and b and c then seg[#seg+1]={shape[1],a,b,c} end
-                        end
                     elseif a and b then seg[#seg+1]={shape[1],a,b} end
                 end
         end
     end
 end
 
-local function ground_flow()
+local function ground_flow(world)
     local cordon=M.show_cordon and M.show_ground_border
     if not M.show_ground_triangles and not M.show_sky and not cordon then
         if M.flow_key~='hidden' then M.flow_seg,M.flow_key={},'hidden' end
@@ -2579,12 +2760,15 @@ local function ground_flow()
         local panel_key=tostring(panel_bucket)..'|'..tostring(M.ground_geom_key)
         if panel_key~=M.cordon_key then
             local panels={}
+            local viewer_p
+            if CORDON_VIEW then viewer_p=player_position(world,clock_ms()/1000) end
             for _,imp in pairs(M.impacts) do
                 if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type] then
                 local h=imp.heading
                 local len=h and math.sqrt(h[1]^2+h[2]^2) or 0
                 if len>0 and not imp.type_display_wait then
-                    add_cordon_panels(panels,imp,h[1]/len,h[2]/len,panel_bucket/10*GROUND_FLOW_SPEED)
+                    add_cordon_panels(panels,imp,h[1]/len,h[2]/len,
+                        panel_bucket/10*GROUND_FLOW_SPEED,viewer_p)
                 end
                 end
             end
@@ -2600,6 +2784,10 @@ end
 -- What the geometry currently is, cheaply. A change here is what triggers a rebuild and a
 -- re-submission; nothing else does, which is where the frame rate came back from.
 local function geometry_key()
+    if M.geom_key~=nil and M.geometry_key_ground~=nil
+        and M.geometry_key_ground_revision==(M.ground_revision or 0) then
+        return M.geom_key,M.geometry_key_ground
+    end
     local ground_key=ground_geometry_key()
     local parts = {ground_key,tostring(M.show_air),tostring(M.show_sky)}
     for unit, track in pairs(M.tracks) do
@@ -2615,7 +2803,10 @@ local function geometry_key()
     end
     -- pairs() order is not stable, and an unstable key would rebuild the geometry every frame.
     table.sort(parts)
-    return table.concat(parts, '|'),ground_key
+    local key=table.concat(parts,'|')
+    M.geometry_key_ground=ground_key
+    M.geometry_key_ground_revision=M.ground_revision or 0
+    return key,ground_key
 end
 
 -- Where the geometry actually IS, in world coordinates, as opposed to where I believe it is.
@@ -2652,15 +2843,28 @@ local function log_geometry_box()
         #M.track_order, #M.impact_order))
 end
 
-local function frame_colors()
-    local colors = { air = colour('air'), ground = colour('ground'),
-        holo = colour('holo'), trail = colour('trail'), marker = colour('marker'),flow=colour('flow'),
-        cordon=colour('cordon'),cordon_dim=colour('cordon_dim'),cordon_text=colour('cordon_text') }
-    for i=1,5 do colors['sky'..i]=colour('sky'..i) end
-    colors.sky_edge=colour('sky_edge')
-    if M.show_ground_area and not M.show_native_light_probe and M.solid_active then colors.area=colour('area') end
+local function color_keys(batch,cache)
+    if cache and cache.source==batch then return cache.keys,cache end
+    local keys={}
+    for _,s in ipairs(batch) do
+        if type(s[1])=='string' then keys[s[1]]=true end
+    end
+    return keys,{source=batch,keys=keys}
+end
+
+local function frame_colors(...)
+    local needed={}
+    for i=1,select('#',...) do
+        local keyset=select(i,...)
+        if keyset then for key in pairs(keyset) do needed[key]=true end end
+    end
+    local colors={}
+    for key in pairs(needed) do colors[key]=colour(key) end
     return colors
 end
+
+local static_color_key_cache,flow_color_key_cache
+local static_line_color_key_cache,flow_line_color_key_cache
 
 local function line_plan(batch,cached)
     if cached and cached.source==batch then return cached end
@@ -2669,12 +2873,104 @@ local function line_plan(batch,cached)
     return {source=batch,lines=lines}
 end
 
+local OCCLUSION_OUTLINE
+local function outline_module()
+    if OCCLUSION_OUTLINE~=nil then return OCCLUSION_OUTLINE or nil end
+    local ok,module=pcall(require,'mods/codex/eagle_occlusion_outline')
+    if ok and type(module)=='table' and type(module.build)=='function'
+        and type(module.dash)=='function' then OCCLUSION_OUTLINE=module
+    else OCCLUSION_OUTLINE=false end
+    return OCCLUSION_OUTLINE or nil
+end
+
+local function outline_cache(batch,cached)
+    if cached and cached.source==batch then return cached end
+    local module=outline_module()
+    if not module then
+        M.occlusion_status='outline module unavailable'
+        return {source=batch,primary={},dashed={}}
+    end
+    local source=batch
+    local needs_filter=false
+    for _,record in ipairs(batch) do
+        if record.scan_fill or record[1]=='cordon_text' then needs_filter=true;break end
+    end
+    if needs_filter then
+        source={}
+        for _,record in ipairs(batch) do
+            -- X-ray communicates the plate/component boundary, not every glyph stroke.
+            -- Keep the original batch untouched so primary text remains visible.
+            if not record.scan_fill and record[1]~='cordon_text' then
+                source[#source+1]=record
+            end
+        end
+    end
+    local edges=module.build(source)
+    local primary,dashed={},{}
+    for _,edge in ipairs(edges) do
+        -- The original 2-point strokes already enter the primary depth-tested batch.
+        -- Only filled-mesh boundaries are added as solid cover lines.
+        if edge.source_line~=true then
+            primary[#primary+1]={edge.kind,edge.p1,edge.p2}
+        end
+    end
+    for _,edge in ipairs(module.dash(edges,1.2,0.8)) do
+        dashed[#dashed+1]={edge.kind,edge.p1,edge.p2}
+    end
+    return {source=batch,primary=primary,dashed=dashed}
+end
+
+local function combined_outline(static_outline,flow_outline)
+    local cached=M.occlusion_combined_cache
+    if cached and cached.static==static_outline and cached.flow==flow_outline then
+        return cached.primary,cached.dashed
+    end
+    local primary,dashed={},{}
+    for _,s in ipairs(static_outline.primary) do primary[#primary+1]=s end
+    for _,s in ipairs(flow_outline.primary) do primary[#primary+1]=s end
+    for _,s in ipairs(static_outline.dashed) do dashed[#dashed+1]=s end
+    for _,s in ipairs(flow_outline.dashed) do dashed[#dashed+1]=s end
+    M.occlusion_combined_cache={static=static_outline,flow=flow_outline,
+        primary=primary,dashed=dashed}
+    return primary,dashed
+end
+
+local function submit_line_batches(world,line,batches,colors)
+    if world==nil or line==nil then return false end
+    local skipped=0
+    local ok,err=pcall(function()
+        sr.LineObject.reset(line)
+        for _,batch in ipairs(batches) do
+            for i=1,#batch do
+                local s=batch[i]
+                if not s[4] then
+                    local c=colors[s[1]]
+                    local a=sr.Vector3(s[2][1],s[2][2],s[2][3])
+                    local b=sr.Vector3(s[3][1],s[3][2],s[3][3])
+                    if c==nil or a==nil or b==nil then skipped=skipped+1
+                    else sr.LineObject.add_line(line,c,a,b) end
+                end
+            end
+        end
+        sr.LineObject.dispatch(world,line)
+    end)
+    if skipped>0 then
+        M.skipped=(M.skipped or 0)+skipped
+        if not M.skip_logged then
+            M.skip_logged=true
+            log(string.format('WARNING: %d lines lacked a usable color/vector and were skipped',skipped))
+        end
+    end
+    if not ok then M.occlusion_status='line submit failed: '..tostring(err);return false end
+    return true
+end
+
 local function submit_geometry()
     local world, line, seg = M.line_world, M.line, M.seg
     if world == nil or line == nil or seg == nil then return false end
     -- The engine objects are built HERE, in the frame that dispatches them, and never cached:
     -- they live in the script temp arena, which this mod restores at the end of every frame.
-    local flow=not M.selftest and ground_flow() or {}
+    local flow=not M.selftest and ground_flow(world) or {}
     local static_lines,flow_lines=seg,flow
     if M.solid_active then
         M.static_line_plan=line_plan(seg,M.static_line_plan)
@@ -2686,44 +2982,46 @@ local function submit_geometry()
     end
     local renderer=M.solid_renderer
     local face_change=M.solid_active and (renderer.world~=world or renderer.static~=seg or renderer.flow~=flow)
+    local static_outline,flow_outline
+    local primary_outline,secondary_outline={},{}
+    if M.through_world then
+        M.occlusion_static_cache=outline_cache(seg,M.occlusion_static_cache)
+        M.occlusion_flow_cache=outline_cache(flow,M.occlusion_flow_cache)
+        static_outline,flow_outline=M.occlusion_static_cache,M.occlusion_flow_cache
+        primary_outline,secondary_outline=combined_outline(static_outline,flow_outline)
+    else
+        release_xray_line()
+        M.occlusion_mode_changed=false
+    end
     local colors={}
-    if #static_lines>0 or #flow_lines>0 or face_change then
-        colors=frame_colors()
+    if #static_lines>0 or #flow_lines>0 or #primary_outline>0
+        or #secondary_outline>0 or face_change then
+        local static_keys,flow_keys
+        if face_change then
+            static_keys,static_color_key_cache=color_keys(seg,static_color_key_cache)
+            flow_keys,flow_color_key_cache=color_keys(flow,flow_color_key_cache)
+        else
+            static_keys,static_line_color_key_cache=color_keys(static_lines,static_line_color_key_cache)
+            flow_keys,flow_line_color_key_cache=color_keys(flow_lines,flow_line_color_key_cache)
+        end
+        local primary_keys
+        primary_keys,M.primary_outline_color_cache=color_keys(primary_outline,M.primary_outline_color_cache)
+        local secondary_keys
+        secondary_keys,M.secondary_outline_color_cache=color_keys(secondary_outline,M.secondary_outline_color_cache)
+        colors=frame_colors(static_keys,flow_keys,primary_keys,secondary_keys)
     end
 
     -- Never pass a missing colour/vector into the native binding. In 1.7.0 ground segments
     -- stored a Color instead of the key 'ground', so the lookup below returned nil. Native
     -- faults are not caught by pcall; the offline engine also validates this boundary now.
-    local skipped = 0
-    local ok = pcall(function()
-        sr.LineObject.reset(line)
-        for _,batch in ipairs({static_lines,flow_lines}) do
-            for i = 1, #batch do
-                local s = batch[i]
-                if not s[4] then
-                    local c = colors[s[1]]
-                    local a = sr.Vector3(s[2][1], s[2][2], s[2][3])
-                    local b = sr.Vector3(s[3][1], s[3][2], s[3][3])
-                    if c == nil or a == nil or b == nil then
-                        skipped = skipped + 1
-                    else
-                        sr.LineObject.add_line(line, c, a, b)
-                    end
-                end
-            end
-        end
-        sr.LineObject.dispatch(world, line)
-    end)
-    if skipped > 0 then
-        M.skipped = (M.skipped or 0) + skipped
-        if not M.skip_logged then
-            M.skip_logged = true
-            log(string.format('WARNING: %d of %d lines could not be built in one frame '
-                .. '(missing colour key or constructor result). '
-                .. 'Those lines are skipped rather than passed to the engine.', skipped, #seg))
-        end
+    local primary_batches={static_lines,flow_lines,primary_outline}
+    local xray_ok=true
+    if M.through_world then
+        local xray=ensure_xray_line(world)
+        xray_ok=xray~=nil and submit_line_batches(world,xray,{secondary_outline},colors)
     end
-    if not ok then
+    local ok=submit_line_batches(world,line,primary_batches,colors)
+    if not ok or not xray_ok then
         M.errors = M.errors + 1
         M.draw_off = true
         release_line()
@@ -2757,13 +3055,23 @@ end
 local function hide_line()
     if M.solid_renderer then pcall(M.solid_renderer.clear,M.solid_renderer) end
     M.solid_triangles=0
+    release_xray_line()
     if M.line and M.line_world then
-        pcall(function()
-            sr.LineObject.reset(M.line)
-            local z = sr.Vector3(0, 0, 0)
-            sr.LineObject.add_line(M.line, sr.Color(0, 0, 0, 0), z, z)
-            sr.LineObject.dispatch(M.line_world, M.line)
-        end)
+        local world,line=M.line_world,M.line
+        if world_is_live(world) then
+            pcall(function()
+                sr.LineObject.reset(line)
+                local z = sr.Vector3(0, 0, 0)
+                sr.LineObject.add_line(line, sr.Color(0, 0, 0, 0), z, z)
+                sr.LineObject.dispatch(world,line)
+            end)
+        else
+            if M.lines then M.lines[world]=nil end
+            for i=#(M.line_order or {}),1,-1 do
+                if M.line_order[i]==world then table.remove(M.line_order,i) end
+            end
+            M.line,M.line_world=nil,nil
+        end
     end
     M.seg, M.geom_key, M.need_submit = nil, nil, false
     M.static_line_plan,M.flow_line_plan=nil,nil
@@ -2774,13 +3082,62 @@ local function hide_line()
 end
 
 local native_confirmed_impacts={}
+local native_sync_next=0
+local native_last_world=nil
+local native_tick_frame=0
+M.native_dirty=true
+local render_world_initialized=false
+local render_world=nil
+synchronize_render_world=function(world)
+    if not render_world_initialized then
+        render_world_initialized=true
+        render_world=world
+        -- No prior world-owned engine state can exist before the first observation.
+        -- Preserve pre-seeded offline render fixtures as well as ordinary first-load state.
+        if world~=nil then return world end
+    end
+    if world==render_world then return world end
+    render_world_initialized=true
+    render_world=world
+    -- Retire renderer/native handles before clearing world-owned guide state. The release
+    -- path checks Application.worlds before invoking engine destructors.
+    release_line()
+    -- Impact/type/track objects belong to the world that produced their handles.
+    -- Clear before native reconciliation or local-player hazard checks can consume them.
+    M.impacts,M.impact_order={},{}
+    M.tracks,M.track_order={},{}
+    beacon_motion={}
+    active_call=nil
+    for id in pairs(seen_beacon_ids) do seen_beacon_ids[id]=nil end
+    M.ground={}
+    M.ground_revision=(M.ground_revision or 0)+1
+    M.ground_seg,M.ground_geom_key=nil,nil
+    M.geom_key,M.flow_key,M.geometry_key_ground=nil,nil,nil
+    M.type_world,M.type_provider,M.type_epoch=world,nil,nil
+    M.type_next,M.type_retry_at=0,0
+    M.type_labels={}
+    M.terrain_world,M.terrain_provider=world,nil
+    M.terrain_active,M.terrain_dirty=false,false
+    M.terrain_retry_at,M.terrain_flush_at=0,0
+    M.native_dirty=true
+    M.native_pending_spawn=false
+    M.geom_key=nil
+    if M.solid_renderer then pcall(M.solid_renderer.release,M.solid_renderer) end
+    log('world epoch changed: stale guides cleared before render/native sync')
+    return world
+end
 local function native_light_tick()
     if not M.show_native_light_probe or M.selftest then
         if M.native_light_probe and M.native_light_probe.world then M.native_light_probe:release() end
         M.native_light_count=0
+        M.native_pending_spawn=false
+        native_sync_next=0
         return
     end
+    native_tick_frame=native_tick_frame+1
     local now=os.clock()
+    local world=main_world()
+    if world~=native_last_world then native_last_world=world;native_sync_next=0;M.native_dirty=true end
     if not M.native_light_probe and now>=(M.native_light_retry or 0) then
         local ok,provider,reason=pcall(function()
             return require('mods/codex/eagle_native_light_probe').new(sr)
@@ -2792,23 +3149,53 @@ local function native_light_tick()
         end
     end
     if M.native_light_probe then
+        local should_sync=now>=native_sync_next or M.native_dirty or M.native_pending_spawn
+        if should_sync then
+        native_sync_next=now+0.05
+        M.native_dirty=false
         for id in pairs(native_confirmed_impacts) do native_confirmed_impacts[id]=nil end
+        local expected=0
         for id,imp in pairs(M.impacts) do
-            if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type] then
+            if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type]
+                and imp.type_epoch==M.type_epoch then
                 native_confirmed_impacts[id]=imp
+                expected=expected+1
             end
         end
-        local ok,_,status,count=pcall(M.native_light_probe.sync,M.native_light_probe,main_world(),
-            native_confirmed_impacts,now)
-        if ok then M.native_light_status,M.native_light_count=status,count
+        local ok,active,status,count,diagnostic=pcall(M.native_light_probe.sync,M.native_light_probe,world,
+            native_confirmed_impacts,now,M.native_light_authored_color,native_tick_frame)
+        if ok then
+            M.native_light_status,M.native_light_count=status,count
+            M.native_pending_spawn=active and count<expected
+                and now>=(M.native_light_probe.retry_at or 0)
+            if diagnostic then
+                log(string.format('native light color readback v%s: %s',M.version,diagnostic))
+            end
         else
-            M.native_light_status='native light unavailable: '..tostring(_)
+            M.native_light_status='native light unavailable: '..tostring(active)
             pcall(M.native_light_probe.release,M.native_light_probe)
             M.native_light_probe,M.native_light_retry=nil,now+1
         end
+        end
+        if M.native_light_probe and world~=nil and M.native_light_probe.world==world then
+            local ok,active,status,count=pcall(M.native_light_probe.keep_alive,M.native_light_probe,
+                M.impacts,M.type_profiles and M.type_profiles.catalog,native_tick_frame,now,M.type_epoch)
+            if ok then
+                M.native_light_count=count
+                if not active and count==0 and next(M.impacts)==nil then M.native_pending_spawn=false end
+                if status and status:find('unavailable',1,true) then M.native_light_status=status end
+            else
+                M.native_light_status='native light unavailable: keepalive failed: '..tostring(active)
+                pcall(M.native_light_probe.release,M.native_light_probe)
+                M.native_light_probe,M.native_light_retry=nil,now+1
+            end
+            if M.native_light_probe and now<(M.native_light_probe.retry_at or 0) then
+                M.native_pending_spawn=false
+            end
+        end
     end
     if M.native_light_status~=M.native_light_logged then
-        log('native red light: '..tostring(M.native_light_status));M.native_light_logged=M.native_light_status
+        log('native light test: '..tostring(M.native_light_status));M.native_light_logged=M.native_light_status
     end
 end
 
@@ -2818,10 +3205,10 @@ local function draw_corridor()
     -- would have left the switch effective only on restart - the opposite of what the README
     -- promises and of what makes it an escape hatch.
     if not drawing_allowed(os.clock()) then
-        if M.native_light_probe then pcall(M.native_light_probe.release,M.native_light_probe) end
-        if M.solid_renderer then pcall(M.solid_renderer.release,M.solid_renderer) end
+        release_line()
         return
     end
+    synchronize_render_world(main_world())
     native_light_tick()
 
     -- Drawing self-test: a fixed line beside the ship, so the line API is proven on this
@@ -2896,7 +3283,7 @@ local function draw_corridor()
     local key,ground_key = geometry_key()
     if key ~= M.geom_key then
         local count = build_geometry(ground_key)
-        if count == 0 and #ground_flow() == 0 then
+        if count == 0 and #ground_flow(world) == 0 then
             hide_line()
             M.geom_key = key
             return
@@ -2919,6 +3306,7 @@ end
 local function corridor_tick()
     local now = os.clock()
     local world = main_world()
+    synchronize_render_world(world)
     if world == nil then return end
     local entries = {}
     for _, unit in ipairs(units_by_resource(world, EAGLE_RESOURCE)) do
@@ -2970,6 +3358,8 @@ local function corridor_tick()
             and (gone or (now - (imp.born or imp.t)) > IMPACT_TTL_S)
         if finished or fallback_end then
             M.impacts[call] = nil
+            M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil
+            M.native_dirty=true
             local rec=imp.beacon and beacon_motion[imp.beacon]
             if rec and rec.strike_id==call then
                 -- Resource lookup absence is weaker evidence than aircraft departure.
@@ -2994,6 +3384,8 @@ end
 -- game is not worth its data, and 0.2.0 had neither guard.
 local function guarded()
     local began = clock_ms()
+    local guide_at_start=(M.seg_count or 0)>0 or (M.solid_triangles or 0)>0
+        or (M.native_light_count or 0)>0
     menu_tick()
     local saved = temp_guard_begin()
     local ok, reason = pcall(sample_body)
@@ -3059,7 +3451,20 @@ local function guarded()
         end
     end
     local draw_spent = clock_ms() - draw_began
+    local guide_present=guide_at_start or (M.seg_count or 0)>0
+        or (M.solid_triangles or 0)>0 or (M.native_light_count or 0)>0
     M.draw_last_ms = draw_spent
+    M.draw_total_ms=(M.draw_total_ms or 0)+draw_spent
+    M.draw_timed_samples=(M.draw_timed_samples or 0)+1
+    if M.last_tick_active then
+        M.draw_active_total_ms=(M.draw_active_total_ms or 0)+draw_spent
+        M.draw_active_samples=(M.draw_active_samples or 0)+1
+        M.draw_active_peak_ms=math.max(M.draw_active_peak_ms or 0,draw_spent)
+    else
+        M.draw_idle_total_ms=(M.draw_idle_total_ms or 0)+draw_spent
+        M.draw_idle_samples=(M.draw_idle_samples or 0)+1
+        M.draw_idle_peak_ms=math.max(M.draw_idle_peak_ms or 0,draw_spent)
+    end
     if draw_spent > (M.draw_peak_ms or 0) then M.draw_peak_ms = draw_spent end
 
     -- Frame interval, so "the frame rate dropped" becomes a number in the log instead of an
@@ -3075,6 +3480,26 @@ local function guarded()
 
     local spent = clock_ms() - began
     M.last_tick_ms = spent
+    M.tick_total_ms=(M.tick_total_ms or 0)+spent
+    M.tick_timed_samples=(M.tick_timed_samples or 0)+1
+    M.tick_peak_ms=math.max(M.tick_peak_ms or 0,spent)
+    if guide_present then
+        M.guide_work_total_ms=(M.guide_work_total_ms or 0)+spent
+        M.guide_work_samples=(M.guide_work_samples or 0)+1
+        M.guide_work_peak_ms=math.max(M.guide_work_peak_ms or 0,spent)
+        M.guide_draw_total_ms=(M.guide_draw_total_ms or 0)+draw_spent
+        M.guide_draw_samples=(M.guide_draw_samples or 0)+1
+        M.guide_draw_peak_ms=math.max(M.guide_draw_peak_ms or 0,draw_spent)
+    end
+    if M.last_tick_active then
+        M.active_tick_total_ms=(M.active_tick_total_ms or 0)+spent
+        M.active_tick_samples=(M.active_tick_samples or 0)+1
+        M.active_tick_peak_ms=math.max(M.active_tick_peak_ms or 0,spent)
+    else
+        M.idle_tick_total_ms=(M.idle_tick_total_ms or 0)+spent
+        M.idle_tick_samples=(M.idle_tick_samples or 0)+1
+        M.idle_tick_peak_ms=math.max(M.idle_tick_peak_ms or 0,spent)
+    end
     M.last_temp_bytes = saved
     if spent > (M.slowest_tick_ms or 0) then M.slowest_tick_ms = spent end
 
@@ -3120,6 +3545,17 @@ end
 
 -- --------------------------------------------------------------------- install --
 local function install()
+    -- Warm the precision timer before guarded/draw measurements include its first-use setup.
+    if performance_clock then
+        pcall(performance_clock.now_ms)
+        M.clock_source=performance_clock.source
+        M.clock_precise=performance_clock.precise
+        M.clock_resolution_ms=performance_clock.resolution_ms
+    else
+        M.clock_source='fallback-os.clock'
+        M.clock_precise=false
+        M.clock_resolution_ms=nil
+    end
     if not open_jsonl() then
         log('WARNING: could not open ' .. JSONL_PATH .. '; log-only mode')
     else
@@ -3129,6 +3565,8 @@ local function install()
     end
     log(string.format('v%s installed (no writes to game memory; draws the Eagle corridor)',
         M.version))
+    log(string.format('performance clock: source=%s precise=%s resolution=%.5gms; frame_gap is not mod CPU time',
+        tostring(M.clock_source),tostring(M.clock_precise),M.clock_resolution_ms or 0))
     native_light_capability_snapshot(sr)
     local capable = report_capabilities()
     if not capable then
@@ -3207,22 +3645,24 @@ local function install()
                 .. 'vanishes, this is why - delete ' .. CHEAP_FILE)
         end
     end
-    local app = sr.Application
-    local has_clock = type(app) == 'table'
-        and type(rawget(app, 'time_since_launch')) == 'function'
     log(string.format('corridor: %s | ground strip: yes | white, %d air strands / %d ground '
-        .. 'lanes | through geometry: %s | submit: %s | clock: %s',
+        .. 'lanes | through geometry: %s | submit: %s | clock: %s/%s',
         M.draw_enabled and 'ON' or 'OFF', AIR_STRANDS, GROUND_LANES,
         tostring(M.through_world), M.every_frame and 'EVERY frame' or 'on geometry change',
-        has_clock and 'Application.time_since_launch (measured)' or 'os.clock (coarse)'))
+        tostring(M.clock_source or 'unavailable'),tostring(M.clock_precise)))
     log(string.format('files: off=%s occluded=%s cheap=%s selftest=%s',
         KILL_SWITCH, OCCLUDED_FILE, CHEAP_FILE, SELFTEST_FILE))
     log(string.format('v%s: %d Hz, in-session only, %d ms tick budget, self-disables '
         .. 'after %d slow ticks, %d s startup grace', M.version, SAMPLE_HZ,
         TICK_BUDGET_MS, SLOW_TICKS_BEFORE_STOP, STARTUP_GRACE_S))
-    log(string.format('querying the aircraft + beacon every tick; %d munition '
-        .. 'identities once per call under a %d ms budget', #RESOLVED,
-        IDENTIFY_BUDGET_MS))
+    if M.detailed_diagnostics then
+        log(string.format('querying aircraft + beacon every tick; detailed munition '
+            .. 'scan enabled (%d identities once per call under %d ms budget)',
+            #RESOLVED,IDENTIFY_BUDGET_MS))
+    else
+        log('querying aircraft + beacon every tick; detailed munition scan is off '
+            .. '(enable the saved detailed_diagnostics option to collect it once per call)')
+    end
     -- Presence checks only. Do not invoke an undocumented native physics binding just
     -- because it exists; this records options for future terrain work without a Runtime mod.
     local physics = rawget(sr, 'PhysicsWorld')

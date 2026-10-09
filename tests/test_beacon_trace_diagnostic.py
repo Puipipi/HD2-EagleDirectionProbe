@@ -25,7 +25,7 @@ class BeaconTraceDiagnosticTest(unittest.TestCase):
                 lua = LuaRuntime()
                 lua.execute("print=function() end")
                 try:
-                    lua.execute(SETUP + THROW + r'''
+                    lua.execute(SETUP + "M.detailed_diagnostics=true\n" + THROW + r'''
 local strike=next(M.impacts)
 ST.beacon_arc=1;tick(10)
 assert(M.impacts[strike]==nil,'bounce must withdraw the provisional impact')

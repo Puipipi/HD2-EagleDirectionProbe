@@ -416,9 +416,14 @@ class CostContractTest(unittest.TestCase):
         self.assertLessEqual(len(calls), 4,
                              'the per-tick path must stay at the beacon plus aircraft')
         for args in calls:
-            self.assertTrue('beacon_key()' in args or 'EAGLE_RESOURCE' in args,
-                            'only the beacon and the aircraft may be queried per tick, '
-                            'found: %s' % args)
+            self.assertTrue('beacon_key()' in args or 'EAGLE_RESOURCE' in args
+                            or 'AVATAR_TP' in args,
+                            'only beacon/aircraft tracking and cached local-avatar '
+                            'identity may query resources, found: %s' % args)
+        pose = (Path(__file__).resolve().parents[1] / 'src/local_player_pose.lua').read_text(
+            encoding='utf-8')
+        self.assertIn('POSITION_INTERVAL = 0.1', pose)
+        self.assertIn('IDENTITY_INTERVAL = 1.0', pose)
 
     def test_sampling_is_gated_on_being_in_a_mission(self):
         self.assertIn('IN_SESSION_ONLY', self.source)
@@ -573,7 +578,8 @@ class CorridorFeedbackTest(unittest.TestCase):
             self.assertNotIn('sr.Vector3', body,
                              '%s must cache plain numbers, not engine vectors' % fn)
         # ...and the submit path must be the place they are built.
-        submit = self.submit_body()
+        submit = self.source.split('local function submit_line_batches(', 1)[1].split(
+            '\nlocal function submit_geometry', 1)[0]
         self.assertIn('sr.Vector3(s[2][1]', submit,
                       'the engine vectors must be built in the frame that dispatches them')
         self.assertIn('geom_key', self.source)
@@ -585,7 +591,12 @@ class CorridorFeedbackTest(unittest.TestCase):
         allocate in the temp arena this mod restores every frame. The colours are rebuilt per
         submission for the same reason.
         """
-        self.assertIn('local colors = { air = colour(', self.source)
+        frame_colors = self.source.split('local function frame_colors(', 1)[1].split(
+            '\nend', 1)[0]
+        self.assertIn('local colors={}', frame_colors,
+                      'native color values must be rebuilt into a frame-local table')
+        self.assertIn('colors[key]=colour(key)', frame_colors,
+                      'only the current frame’s used categories should create colors')
         colour_body = self.source.split('local function colour(kind)', 1)[1].split(
             '\nend', 1)[0]
         self.assertNotIn('M.color_', colour_body,

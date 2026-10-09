@@ -20,6 +20,11 @@ entry(126,'Eagle Gas Airstrike','REF GAS',-100/3,100/3,10)
 entry(3,'Eagle 500kg Bomb','REF 500KG',-25,25,25,'circle')
 entry(140,'Eagle 110mm Rocket Pods','110MM TARGET ?',-100,100,6,'direction')
 
+for id,label in pairs({[18]='AIRSTRIKE',[30]='STRAFE',[65]='CLUSTER',
+    [133]='NAPALM',[38]='SMOKE',[126]='GAS',[3]='500KG',[140]='110MM'}) do
+    P.catalog[id].panel_label=label
+end
+
 function P.bounds(id) return P.catalog[id] and P.catalog[id].bounds or generic end
 
 local function near(a,b)

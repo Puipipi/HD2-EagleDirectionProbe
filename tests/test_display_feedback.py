@@ -148,23 +148,32 @@ for _,n in pairs(subscriptions) do assert(n==1,'retry duplicated a successful ca
         replay(THROW + '''
 assert(M.line.flag==false,'default warnings still show through buildings')
 assert(FRAME_HAS_LINES,'depth testing must not disable the guides')
+for _,batch in ipairs({M.seg,M.flow_seg}) do
+    for _,s in ipairs(batch) do
+        assert(not s.scan_fill and not s.outline_boundary,
+            'default depth-tested mode should not build x-ray-only metadata')
+    end
+end
 ''')
 
-    def test_late_menu_restores_saved_choice_and_changes_live_line_depth(self):
+    def test_late_menu_restores_saved_choice_with_a_separate_xray_line(self):
         replay(THROW + MENU + '''
 tick(25)
 assert(registered and changed,'late-loaded Mod Options Menu was not registered')
-assert(M.line.flag==true,'saved enabled choice was not applied')
+assert(M.line.flag==false,'primary line must retain depth testing')
+assert(M.xray_line and M.xray_line.flag==true,'saved enabled choice did not create xray line')
 local before=M.line
+local xray=M.xray_line
 local strike=next(M.impacts)
 changed(false,registered)
 tick(1)
-assert(M.line.flag==false and M.line~=before,'live line retained the old depth flag')
+assert(M.line.flag==false and M.line==before,'primary line changed with the xray option')
+assert(M.xray_line==nil and xray.destroyed,'turning透视 off did not release the xray channel')
 assert(M.impacts[strike] and FRAME_HAS_LINES,'changing depth reset a live strike')
-before=M.line
 changed(true,registered)
 tick(1)
-assert(M.line.flag==true and M.line~=before,'enabling see-through did not recreate the line')
+assert(M.line.flag==false and M.xray_line and M.xray_line.flag==true,
+    'enabling透视 did not recreate only the xray channel')
 assert(M.impacts[strike] and FRAME_HAS_LINES,'reenabling lost the warning')
 ''')
 

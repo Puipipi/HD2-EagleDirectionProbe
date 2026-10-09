@@ -64,6 +64,8 @@ local sr = {}
 local EAGLE_QUERIES = 0
 local CREATE_CALLS = 0
 local DESTROY_CALLS = 0
+local CREATED_LINE_OBJECTS = {}
+local LINE_SUBMISSIONS = {}
 sr.Application = {
     -- worldchurn: a NEW table every call. This is the hypothesis that the engine hands back a
     -- fresh wrapper each time, so comparing worlds by identity churns the line object. The
@@ -98,9 +100,14 @@ sr.World = {
     end,
     create_line_object = function(_, flag)
         CREATE_CALLS = CREATE_CALLS + 1
-        return { flag = flag }
+        local line={flag=flag,id=CREATE_CALLS}
+        CREATED_LINE_OBJECTS[#CREATED_LINE_OBJECTS+1]=line
+        return line
     end,
-    destroy_line_object = function() DESTROY_CALLS = DESTROY_CALLS + 1 end,
+    destroy_line_object = function(_,line)
+        DESTROY_CALLS = DESTROY_CALLS + 1
+        if line then line.destroyed=true end
+    end,
 }
 sr.Unit = {
     world_position = function(unit)
@@ -128,19 +135,23 @@ FRAME_DISPATCHED = false
 FRAME_HAS_LINES = false
 GROUND_LINES_SUBMITTED = 0
 sr.LineObject = {
-    reset = function()
+    reset = function(line)
         ADDED[#ADDED + 1] = 'reset'
+        FRAME_LINE=line
+        FRAME_LINE_ADDED=0
         FRAME_HAS_LINES = false          -- reset clears what the object would draw
     end,
-    add_line = function(_, color, a, b)
+    add_line = function(line, color, a, b)
         assert(color ~= nil and a ~= nil and b ~= nil, 'invalid engine add_line argument')
         if color.a == 235 then GROUND_LINES_SUBMITTED = GROUND_LINES_SUBMITTED + 1 end
         ADDED[#ADDED + 1] = { color, a, b }
+        FRAME_LINE_ADDED=(FRAME_LINE_ADDED or 0)+1
         -- Alpha 0 is the probe's way of hiding a line, so it does not count as visible.
         if color ~= nil and color.a ~= nil and color.a > 0 then FRAME_HAS_LINES = true end
     end,
-    dispatch = function()
+    dispatch = function(_,line)
         ADDED[#ADDED + 1] = 'dispatch'
+        LINE_SUBMISSIONS[#LINE_SUBMISSIONS+1]={line=line or FRAME_LINE,count=FRAME_LINE_ADDED or 0}
         FRAME_DISPATCHED = true
     end,
 }
@@ -183,6 +194,45 @@ package.preload['mods/codex/eagle_stratagem_query'] = function()
         end
         return rows,'READY','mission-one'
     end} end}
+end
+package.preload['mods/codex/eagle_cordon_font'] = function()
+    local path=probe_path:gsub('eagle_direction_probe.lua$','cordon_font.lua')
+    return assert(loadfile(path))()
+end
+package.preload['mods/codex/eagle_occlusion_outline'] = function()
+    local path=probe_path:gsub('eagle_direction_probe.lua$','occlusion_outline.lua')
+    local module=assert(loadfile(path))()
+    local build,dash=module.build,module.dash
+    OUTLINE_BUILDS,OUTLINE_DASHES=OUTLINE_BUILDS or 0,OUTLINE_DASHES or 0
+    module.build=function(...)
+        OUTLINE_BUILDS=OUTLINE_BUILDS+1
+        return build(...)
+    end
+    module.dash=function(...)
+        OUTLINE_DASHES=OUTLINE_DASHES+1
+        return dash(...)
+    end
+    return module
+end
+package.preload['mods/codex/eagle_terrain_grid'] = function()
+    local path=probe_path:gsub('eagle_direction_probe.lua$','terrain_grid.lua')
+    return assert(loadfile(path))()
+end
+package.preload['mods/codex/eagle_performance_clock'] = function()
+    return {new=function()
+        return {now_ms=function() return sr.Application.time_since_launch()*1000 end,
+            source='fixture',precise=true,resolution_ms=0.01}
+    end}
+end
+package.preload['mods/codex/eagle_local_player_pose'] = function()
+    if POSE_FIXTURE then return POSE_FIXTURE end
+    local path=probe_path:gsub('eagle_direction_probe.lua$','local_player_pose.lua')
+    return assert(loadfile(path))()
+end
+package.preload['mods/codex/eagle_cordon_view'] = function()
+    if CORDON_VIEW_FIXTURE then return CORDON_VIEW_FIXTURE end
+    local path=probe_path:gsub('eagle_direction_probe.lua$','cordon_view.lua')
+    return assert(loadfile(path))()
 end
 
 _G.stingray = sr

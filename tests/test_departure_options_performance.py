@@ -135,7 +135,12 @@ saved['eagle_direction_probe.show_sky']=false
 frames(45)
 assert(M.show_air==false and M.show_ground_border==false and M.show_sky==false,
     'saved false was replaced by a default')
-assert(#writes==12,'effective choices were not synchronized to MOM like Cooldown')
+assert(rows['eagle_direction_probe.warn_player']==nil
+    and rows['eagle_direction_probe.detailed_diagnostics'].default==false,
+    'retired warning option must stay absent while diagnostics remains independent')
+assert(rows['eagle_direction_probe.native_light_authored_color'].default==false,
+    'authored-color comparison should default to off')
+assert(#writes==14,'effective choices were not synchronized to MOM like Cooldown')
 for _,w in ipairs(writes) do
     assert(w[2]==values[w[1]],'a default overwrote a saved value during registration')
 end

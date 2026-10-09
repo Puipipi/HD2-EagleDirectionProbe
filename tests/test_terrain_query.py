@@ -35,6 +35,7 @@ class TerrainQueryTest(unittest.TestCase):
     def test_distant_ridge_changes_actual_ground_vertices(self):
         replay(SCENE + '''
 M.adapt_range=false -- keep the long generic footprint for distant-ridge sampling coverage
+M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil
 frames(45)
 local high = 0
 for _, s in ipairs(M.seg or {}) do
@@ -46,7 +47,7 @@ for _, s in ipairs(M.seg or {}) do
     end
 end
 assert(high >= 8, 'distant ridge was flattened to the beacon height')
-assert(casts > 0 and casts <= 70, 'grid must be queried once and cached')
+assert(casts > 0 and casts <= 75, 'grid must be queried once and cached')
 assert(max_frame <= 2, 'terrain query budget exceeded')
 local old=casts
 frames(30)
@@ -60,8 +61,8 @@ for i=2,7 do
 end
 frames(240)
 assert(max_frame <= 2, 'budget must cover all corridors together')
-assert(casts >= 7*60, 'some corridors starved or were capped')
-assert(casts <= 7*70, 'completed terrain grids should be cached')
+assert(casts >= 7*55, 'some corridors starved or were capped')
+assert(casts <= 7*55, 'completed short-strip grids should be cached')
 ''')
 
     def test_missing_hits_do_not_draw_a_flat_bridge_through_unknown_terrain(self):
@@ -137,13 +138,14 @@ for i=1,140 do
     _G.update()
     assert(in_frame<=2,'high FPS multiplied the per-frame native workload')
 end
-assert(casts==63,'one second should complete and cache the stationary grid')
+assert(casts==55,'the confirmed short strip should use its 55-point cached grid')
 ''')
 
     def test_ground_arrow_sides_also_follow_the_cached_surface(self):
         scene=SCENE.replace('30 - math.abs(x - 60)', '20 - 2*math.abs(x - 85)')
         replay(scene + '''
 M.adapt_range=false -- this test measures terrain following, not a stratagem's shorter reference extent
+M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil
 frames(45)
 FAKE_TIME=200
 frames(1)

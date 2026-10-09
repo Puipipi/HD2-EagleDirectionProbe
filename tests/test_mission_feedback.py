@@ -48,7 +48,7 @@ end
 '''
 
 
-def replay(scene):
+def replay(scene, prelude=''):
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp) / 'CowboyBingus/Helldivers2/Logs').mkdir(parents=True)
         with patch.dict(os.environ, {'DSH_HARNESS_TMP': tmp,
@@ -57,7 +57,7 @@ def replay(scene):
             lua = LuaRuntime()
             lua.execute('print = function() end')
             try:
-                lua.execute(SETUP + DEFAULT_EAGLE_TYPES + scene)
+                lua.execute(prelude + SETUP + DEFAULT_EAGLE_TYPES + scene)
             except LuaError as error:
                 raise AssertionError(str(error)) from error
             finally:
@@ -68,6 +68,20 @@ def replay(scene):
 
 
 class MissionFeedbackTest(unittest.TestCase):
+    def test_precision_clock_status_separates_cpu_cost_from_frame_gap(self):
+        replay('''
+FAKE_TIME=200;update()
+assert(M.clock_source=='fixture' and M.clock_precise==true,
+    'offline timing fixture did not explicitly identify its source')
+assert(M.tick_timed_samples>0 and M.draw_timed_samples>0,
+    'guarded hotpath and draw timing were not accumulated')
+local f=assert(io.open(os.getenv('LOCALAPPDATA')..'/CowboyBingus/Helldivers2/Logs/EagleDirectionProbe.log','r'))
+local text=f:read('*a');f:close()
+assert(text:find('clock=fixture/true',1,true) and text:find('tick_avg=',1,true)
+    and text:find('draw_active=',1,true) and text:find('frame_gap_peak=',1,true),
+    'status must identify clock source and report CPU work separately from frame gaps')
+''')
+
     def test_finished_strike_clears_without_waiting_for_another_throw(self):
         replay(THROW + '''
 ST.aircraft_up = false
@@ -124,6 +138,68 @@ tick(35)
 assert(next(M.impacts) == nil, 'lingering beacon kept a finished aircraft strip')
 tick(20)
 assert(next(M.impacts) == nil, 'same settled beacon recreated its retired strip')
+''')
+
+    def test_removing_one_cached_guide_rebuilds_ground_membership(self):
+        replay(THROW + '''
+local epoch=tostring(WORLD)..':mission-one'
+M.type_profiles=require('mods/codex/eagle_stratagem_profiles')
+M.type_world,M.type_epoch=WORLD,epoch
+M.type_next=FAKE_TIME+100
+M.stopped=true
+M.impacts,M.impact_order={},{}
+M.tracks,M.track_order={},{}
+M.terrain_active=true;M.terrain_world=WORLD;M.terrain_provider={height=function()
+    error('completed offline terrain cache must not query') end}
+M.terrain_queries=0;M.ground_revision=68;M.ground_geom_key=nil;M.ground_seg=nil
+local function grid(x)
+    local g={x=x,y=0,z=0,hx=1,hy=0,lo=-100.25,hi=100.25,half=12,
+        n=24,rows=3,row_offsets={-12,0,12},
+        h={},order={},cursor=76,born=FAKE_TIME}
+    for k=0,24 do for row=1,3 do
+        g.h[k*3+row]=0;g.order[#g.order+1]={k,row}
+    end end
+    return g
+end
+local departed,alive={},{}
+M.tracks[alive]={trail={{300,0,80}},heading=nil,seen=FAKE_TIME+100,finished=false}
+for id,x in pairs({
+    [901]={100,departed},[902]={300,alive},
+}) do
+    M.impacts[id]={p={x[1],0,0},heading={1,0,0},aircraft=x[2],
+        stratagem_type=18,type_heading_confirmed=true,type_epoch=epoch,
+        born=FAKE_TIME+100,last_seen=FAKE_TIME+100,t=FAKE_TIME,terrain=grid(x[1]),
+        type_display_started=FAKE_TIME,type_display_wait=false}
+    M.impact_order[#M.impact_order+1]=id
+end
+M.track_order={alive};M.geom_key,M.flow_key=nil,nil
+M.corridor_next=FAKE_TIME*1000+5000
+local function upvalue(fn,wanted)
+    for i=1,debug.getinfo(fn,'u').nups do
+        local name,value=debug.getupvalue(fn,i)
+        if name==wanted then return value end
+    end
+end
+local guarded=assert(upvalue(update,'guarded'))
+local corridor=assert(upvalue(guarded,'corridor_tick'))
+local draw=assert(upvalue(guarded,'draw_corridor'))
+draw()
+assert(M.geometry_key_ground:find('901:',1,true)
+    and M.geometry_key_ground:find('902:',1,true),'fixture must cache both guides')
+assert(M.geom_key~=nil and M.draw_frames>0,'fixture did not build a retained render key')
+local before_builds,before_revision=M.ground_builds,M.ground_revision
+M.corridor_next=0
+corridor()
+assert(M.impacts[901]==nil and M.impacts[902]~=nil,
+    'finished aircraft should retire only its own guide')
+assert(M.geom_key==nil and M.ground_geom_key==nil,
+    'removing one strike must dirty both cached geometry keys')
+draw()
+assert(not M.geometry_key_ground:find('901:',1,true)
+    and M.geometry_key_ground:find('902:',1,true),
+    'cached ground membership retained a removed guide')
+assert(M.ground_builds>before_builds and M.ground_revision==before_revision
+    and M.terrain_queries==0,'membership rebuild must reuse the completed terrain grid')
 ''')
 
     def test_an_unrelated_aircraft_does_not_keep_the_old_ground_guide(self):
@@ -242,6 +318,22 @@ for _, s in ipairs(M.seg or {}) do
 end
 assert(lo <= -180, 'air guidance has no incoming stem')
 assert(hi >= 100 and hi <= 150, 'keep the shortened near-aircraft arrowhead')
+''')
+
+    def test_active_timing_bucket_persists_between_samples_and_clears_on_session_end(self):
+        replay(THROW + '''
+assert(M.last_tick_active==true,'fixture must be inside a live mission')
+local active_samples=M.active_tick_samples or 0
+local calls=M.samples
+FAKE_TIME=FAKE_TIME+0.05
+update()
+assert(M.samples==calls,'test frame must occur between the 5 Hz source samples')
+assert(M.last_tick_active==true and M.active_tick_samples>active_samples,
+    'unsampled mission frames were classified as idle')
+sr.GameSession.in_session=function() return false end
+FAKE_TIME=FAKE_TIME+1
+update()
+assert(M.last_tick_active==false,'session end did not clear the active timing state')
 ''')
 
 

@@ -119,7 +119,7 @@ for _,s in ipairs(batch) do for k=2,4 do
 end end
 ''')
 
-    def test_area_has_no_line_or_through_world_fallback(self):
+    def test_area_keeps_primary_fill_and_adds_no_filled_xray_fallback(self):
         for renderer in ('', GUI):
             with self.subTest(solid=bool(renderer)):
                 replay(renderer+TYPES+FLAT+MENU+AREA+'''
@@ -127,7 +127,10 @@ saved['eagle_direction_probe.show_ground_area']=true
 frames(60)
 if M.solid_active then assert(#area_faces()>0) else assert(#area_faces()==0) end
 apply('through_world',true);frames(1)
-assert(#area_faces()==0,'translucent area covered the screen through walls')
+if M.solid_active then
+    assert(#area_faces()>0,'through-world mode must preserve depth-tested filled area')
+    assert(M.xray_line and M.xray_line.flag==true,'through-world mode omitted outline channel')
+else assert(M.xray_line and M.xray_line.flag==true) end
 apply('through_world',false);apply('solid_fill',false);frames(1)
 assert(#area_faces()==0,'area used scan-line fallback')
 ''')
