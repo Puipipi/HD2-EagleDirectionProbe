@@ -20,6 +20,33 @@ tick(60)
 assert(next(M.impacts) ~= nil, 'fixture must reach a landed strike')
 '''
 
+# Ordinary replay scenes represent an identified Eagle. Classification-specific
+# tests replace these lazy modules with their own snapshots (including unknowns).
+DEFAULT_EAGLE_TYPES = '''
+package.preload['mods/codex/eagle_stratagem_profiles']=function()
+    local p=os.getenv('DSH_PROBE_PATH'):gsub('eagle_direction_probe.lua$','stratagem_profiles.lua')
+    return assert(loadfile(p))()
+end
+package.preload['mods/codex/eagle_stratagem_query']=function()
+    return {new=function() return {snapshot=function()
+        local p=sr.Unit.world_position(BEACON)
+        if ST.beacon_arc>0 then
+            return p and {{type=18,p=p,anchor={p[1],p[2]+100,p[3]}}} or {},'READY','mission-one'
+        end
+        -- Pure renderer fixtures may seed explicit impacts without simulating a throw.
+        -- The ordinary replay represents those fixtures as confirmed Eagle calls; tests
+        -- about unknown/unsupported types install their own reader before polling.
+        local probe=rawget(_G,'HD2EagleDirectionProbe')
+        local rows={}
+        for _,imp in pairs(probe and probe.impacts or {}) do
+            local q=imp.p
+            if q then rows[#rows+1]={type=18,p=q,anchor={q[1],q[2]+100,q[3]}} end
+        end
+        return rows,'READY','mission-one'
+    end} end}
+end
+'''
+
 
 def replay(scene):
     with tempfile.TemporaryDirectory() as tmp:
@@ -30,7 +57,7 @@ def replay(scene):
             lua = LuaRuntime()
             lua.execute('print = function() end')
             try:
-                lua.execute(SETUP + scene)
+                lua.execute(SETUP + DEFAULT_EAGLE_TYPES + scene)
             except LuaError as error:
                 raise AssertionError(str(error)) from error
             finally:
@@ -128,7 +155,10 @@ assert(#M.impact_order == 7, 'live strips were evicted by a numerical cap')
     def test_ground_strip_has_compact_closed_travelling_heads(self):
         replay('''
 M.tracks = { design = {trail = {{0, 0, 80}}, heading = {1, 0, 0}, seen = FAKE_TIME} }
-M.impacts = { [1] = {p = {0, 0, 0}, heading = {1, 0, 0}, t = FAKE_TIME} }
+M.impacts = { [1] = {p = {0, 0, 0}, heading = {1, 0, 0}, stratagem_type=18, t = FAKE_TIME} }
+M.type_profiles=require('mods/codex/eagle_stratagem_profiles')
+M.type_world=WORLD;M.type_epoch='world:mission-one';M.impacts[1].type_epoch=M.type_epoch
+M.type_next=FAKE_TIME+100
 M.geom_key = nil
 tick(1)
 local function key(v) return string.format('%.4f,%.4f',v[1],v[2]) end

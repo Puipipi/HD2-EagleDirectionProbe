@@ -112,16 +112,19 @@ assert(shown,'confirmed footprint never appeared')
 assert(max_frame<=2 and type_reads<=6,'initial display increased polling frequency')
 ''')
 
-    def test_unavailable_type_reader_keeps_generic_guide_without_waiting_forever(self):
+    def test_unavailable_type_reader_keeps_candidate_and_aircraft_cue_without_eagle_corridor(self):
         replay(TYPES+FLAT+'''
 type_rows=nil
 frames(20)
 local n=0
 for _,s in ipairs(M.seg or {}) do if s[1]=='ground' then n=n+1 end end
-assert(n>0 and not M.impacts[1].stratagem_type,'type failure removed the generic fallback')
+local air=0;for _,s in ipairs(M.seg or {}) do if s[1]=='air' then air=air+1 end end
+assert(n==0 and M.impacts[1] and not M.impacts[1].stratagem_type,
+    'unavailable type reader must retain the candidate without inventing an Eagle corridor')
+assert(air>0,'unknown candidate hid the independent aircraft guide')
 ''')
 
-    def test_ambiguous_and_empty_records_have_a_bounded_wait_with_visible_other_cues(self):
+    def test_ambiguous_and_empty_records_wait_then_keep_eagle_geometry_hidden(self):
         for records in ('{}','{{type=3,p={0,0,0}},{type=18,p={0,0,0}}}'):
             with self.subTest(records=records):
                 replay(GUI+TYPES+FLAT+'\ntype_rows='+records+'''
@@ -135,16 +138,18 @@ for _,batch in ipairs({M.seg,M.flow_seg}) do for _,s in ipairs(batch) do
     if s[1]=='sky1' then sky=sky+1 end
     if s[1]=='air' then air=air+1 end
 end end
-assert(marker>0 and sky>0 and air>0,'short type wait hid independent cues')
+assert(marker==0 and sky==0 and air>0,
+    'unconfirmed candidate must retain the aircraft arrow but hide Eagle impact cues')
 frames(11)
 assert(not M.impacts[1].type_display_wait and not M.impacts[1].stratagem_type)
 frames(35)
 local ground=0
 for _,s in ipairs(M.seg) do if s[1]=='ground' then ground=ground+1 end end
-assert(ground>0,'ambiguous/empty type result permanently hid the corridor')
+assert(ground==0 and M.impacts[1] and not M.impacts[1].stratagem_type,
+    'ambiguous/empty type result was treated as a confirmed Eagle corridor')
 ''')
 
-    def test_range_disabled_does_not_defer_the_users_generic_corridor(self):
+    def test_range_disabled_does_not_bypass_positive_confirmation_gate(self):
         replay(TYPES+FLAT+'''
 M.adapt_range=false
 -- Use the existing beacon-height fallback so terrain cache warmup cannot mask
@@ -154,7 +159,8 @@ frames(1)
 assert(not M.impacts[1].type_display_wait,'range-off mode acquired an unnecessary wait')
 local ground=0
 for _,s in ipairs(M.seg) do if s[1]=='ground' then ground=ground+1 end end
-assert(ground>0,'range-off mode lost its immediate generic corridor')
+assert(ground==0 and M.impacts[1] and not M.impacts[1].stratagem_type,
+    'range-off mode bypassed the positive Eagle confirmation gate')
 ''')
 
 

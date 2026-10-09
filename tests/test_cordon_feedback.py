@@ -10,6 +10,7 @@ class CordonFeedbackTest(unittest.TestCase):
     def test_white_long_borders_are_thicker_and_unbroken_on_cached_flat_ground(self):
         replay(SCENE.replace("return math.max(0, 30 - math.abs(x - 60)), 'HIT'",
                              "return 0, 'HIT'") + '''
+M.adapt_range=false;M.show_type=false -- retain the generic renderer fixture
 frames(45)
 local lanes={}
 for _,s in ipairs(M.seg) do
@@ -40,6 +41,7 @@ end
 
     def test_red_tape_is_upright_on_long_edges_only_and_follows_the_distant_ridge(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false -- retain the long generic footprint and short test label
 frames(45)
 local sides,levels={},{}
 local count,raised=0,false
@@ -76,6 +78,7 @@ assert(M.seg==static and casts==old,'red strips rebuilt or queried terrain for a
         from test_cordon_cycle import PANELS
         replay(SCENE.replace("return math.max(0, 30 - math.abs(x - 60)), 'HIT'",
                              "return 0, 'HIT'") + PANELS + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 FAKE_TIME=210;update()
 for _,s in ipairs(M.flow_seg) do
@@ -99,6 +102,7 @@ assert(M.seg_count<=1250,'panel redesign exceeded per-strike geometry budget')
 
     def test_warning_tape_has_a_saved_switch_and_follows_the_border_switch(self):
         replay(SCENE + MENU + '''
+M.adapt_range=false;M.show_type=false
 saved['eagle_direction_probe.show_cordon']=false
 frames(45)
 local row=rows['eagle_direction_probe.show_cordon']
@@ -116,6 +120,7 @@ assert(count('flow')>0 and count('sky1')>0,'border switch removed independent ar
 
     def test_triangles_are_larger_and_ground_and_sky_move_together_at_ten_metres_per_second(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 FAKE_TIME=200
 frames(1)
@@ -148,6 +153,7 @@ assert(M.seg_count<=1250,'warning tape/text exceeded the single-strike geometry 
     def test_warning_text_is_upright_on_both_sides_without_a_gui_api(self):
         replay(SCENE.replace("return math.max(0, 30 - math.abs(x - 60)), 'HIT'",
                              "return 0, 'HIT'") + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 FAKE_TIME=210;update()
 local n,sides,low,high=0,{},math.huge,-math.huge

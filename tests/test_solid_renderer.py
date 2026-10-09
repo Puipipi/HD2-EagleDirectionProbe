@@ -144,6 +144,7 @@ frames(45);check() -- nonzero offset, oblique heading, terrain/cache rebuild and
 
     def test_real_guides_contain_faces_instead_of_scan_fill_and_keep_terrain_budget(self):
         replay(GUI + SCENE + '''
+M.adapt_range=false;M.show_type=false -- preserve the generic geometry budget for renderer validation
 frames(45)
 assert(M.solid_active and creates>0,'true-fill renderer was not activated')
 local kinds={}

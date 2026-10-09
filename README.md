@@ -4,7 +4,21 @@
 
 [下载 GitHub Release 安装包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/latest)
 
-## 当前测试版：1.10.0-rc10 原生投光兼容修复与凝固汽油参考校准（2026-10-09）
+## 当前测试版：1.10.0-rc11 蓝战备隔离与横向范围统一（2026-10-09）
+
+[下载 rc11 测试包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/tag/v1.10.0-rc11)，或手动导入 `dist/HD2-EagleDirectionProbe-1.10.0-rc11.zip`。沿用现有 GUID。
+
+只有经两次唯一位置匹配确认的已知飞鹰战备才会获得飞鹰地面/天空/警戒带指引及可选原生灯。蓝色支援信标、未知、歧义或读取失败的候选会继续轮询，但不会绑定最近飞鹰走廊；独立飞机箭头仍可显示。已经确认的飞鹰在临时读取失败时保留原指引。
+
+飞鹰空袭、集束炸弹、烟雾和毒气以及凝固汽油的参考范围统一为总长约 **66.67 m**、总宽 **20 m**，中心与来袭方向不变。这是用户选择的显示参考，不是已测伤害或弹着边界；Strafing Run、500kg 和 110mm 的范围不随本次改动。
+
+分类仍按现有 **5 Hz** 节奏检查活跃候选，即使名称和范围两个开关都关闭；没有候选时不查询。rc11 还保留主菜单启动时的一次性 native-light API 类型快照，以及双走廊复现用的匿名 `B#` 信标事件编号。手动导入后完全退出并重启游戏，到主菜单即可在 `%LOCALAPPDATA%/CowboyBingus/Helldivers2/Logs/EagleDirectionProbe.log` 找到 `native-light capabilities` 行；之后如再次看到双走廊，反馈相关 `beacon B#` 事件。
+
+原生红光的地面照明、光轴、亮度和 GPU 成本仍待实机验收；rc11 不声称修复或验证红色投光。详见 [rc11 说明](docs/release-1.10.0-rc11.md)。
+
+228 项全量离线测试通过；七项 Lua 资源通过 LuaJIT 编译与封装校验。rc11 ZIP 为 2,220,895 字节，SHA-256：`14a63c5a352ea5e9870060898c3920499b59f8eecdabbd049fa730247c60f3d0`。
+
+## 上个测试版：1.10.0-rc10 原生投光兼容修复与凝固汽油参考校准（2026-10-09）
 
 [下载 rc10 测试包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/tag/v1.10.0-rc10)，
 或手动导入 `dist/HD2-EagleDirectionProbe-1.10.0-rc10.zip`。沿用 GUID，不自动部署。

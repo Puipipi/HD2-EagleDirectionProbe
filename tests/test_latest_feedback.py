@@ -64,6 +64,7 @@ assert(next(M.impacts)~=nil,'reused moving unit retained a permanent retired fla
 
     def test_sky_and_ground_both_move_and_sky_is_one_low_upright_plane_per_glyph(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 FAKE_TIME=200
 frames(1)
@@ -148,6 +149,7 @@ assert(next(M.impacts)==nil,'expired stationary beacon resurrected repeatedly')
 
     def test_fill_rows_cover_arrow_interiors_with_bounded_spacing(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 local positions={}
 for _,s in ipairs(M.flow_seg) do

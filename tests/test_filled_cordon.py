@@ -8,6 +8,7 @@ from test_type_display import FLAT, TYPES
 class FilledCordonTest(unittest.TestCase):
     def test_border_covers_a_band_instead_of_three_parallel_lines(self):
         replay(GUI+FLAT+'''
+M.adapt_range=false;M.show_type=false
 frames(50)
 local area,n=0,0
 for _,s in ipairs(M.seg) do if s[1]=='ground' then
@@ -22,6 +23,7 @@ assert(max_frame<=2 and casts<=85,'filled border increased terrain calls')
 
     def test_every_moving_panel_keeps_its_name_and_same_size_through_handoff(self):
         replay(GUI+FLAT+'''
+M.adapt_range=false;M.show_type=false
 frames(50)
 for frame=0,119 do
     FAKE_TIME=210+frame*0.05;update()

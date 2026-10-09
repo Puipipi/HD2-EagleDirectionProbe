@@ -13,6 +13,15 @@ M.tracks = { design = { trail = {{-20, 0, 80}, {0, 0, 80}},
     heading = {1, 0, 0}, seen = FAKE_TIME+1000 } }
 M.track_order = {'design'}
 M.impacts = { [1] = {p = {0, 0, 0}, heading = {1, 0, 0}, t = FAKE_TIME} }
+package.preload['mods/codex/eagle_stratagem_profiles']=function()
+    local p=os.getenv('DSH_PROBE_PATH'):gsub('eagle_direction_probe.lua$','stratagem_profiles.lua')
+    return assert(loadfile(p))()
+end
+M.type_profiles=require('mods/codex/eagle_stratagem_profiles')
+M.type_world=WORLD;M.type_epoch=tostring(WORLD)..':mission-one'
+M.impacts[1].stratagem_type=18;M.impacts[1].type_epoch=M.type_epoch
+M.impacts[1].type_heading_confirmed=true
+M.adapt_range=false;M.show_type=false -- retain the generic silhouette fixture; typed extents are covered separately
 M.impact_order = {1}
 M.ground = {}
 M.geom_key = nil

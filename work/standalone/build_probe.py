@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc10'
+VERSION = '1.10.0-rc11'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -93,7 +93,7 @@ WHAT THIS IS
   controller code are bundled. Normal direction guides do not need the headlamp.
   Creates an OWN light-only helper 12 m above each landing point, with one downward
   red spotlight. This validates native illumination near the beacon, not a precise
-  rectangular attack footprint or the Stingray aircraft's projected texture.
+  rectangular attack footprint or the Stingray's blue ground-marking effect.
   Original headlamp units/settings remain untouched. Missing resource/API means
   no spotlight; existing guides continue. Turn MOM off to remove owned lights.
   Native testing suppresses the old red face overlay for a clear comparison.
@@ -102,8 +102,19 @@ WHAT THIS IS
   Lights retire with guides, on disable, draw failure and shutdown. Scene teardown
   never destroys a unit through a dead world. Real illumination, optical axis,
   brightness and GPU cost still require a manual game test. This does not claim
-  that the Stingray blue ground-marking implementation has been identified. Keep the prototype
-  OFF after testing.
+  that the Stingray blue ground-marking implementation has been identified. Keep the prototype OFF.
+  RC11 STARTUP DIAGNOSTIC: after manual import and full game restart, reaching the
+  main menu is enough to record a one-shot, type-only native-light API snapshot.
+  It does not spawn a helper or call Light getters/setters at startup. If the binding
+  is absent at addon load, nil is recorded; no global update hook is installed.
+  RC11 BLUE-BEACON FIX: only a positive two-snapshot match to a known Eagle
+  stratagem can bind the nearest aircraft or draw its ground, sky, cordon or native
+  light guide. Unknown, unsupported, ambiguous or unavailable records remain
+  candidates for polling and cannot borrow the nearest Eagle's heading. The separate
+  aircraft arrow remains visible. A previously confirmed Eagle keeps its guide during
+  a temporary reader failure. Each tracked beacon record also gets an anonymous B#
+  episode id for event logs and JSON trace/motion fields. B# identifies the current
+  Lua tracking record, can change after cleanup/prune, and is not an engine Unit id.
   White borders/landing diamond stay static. Ground border/triangles now clear
   cached terrain by 0.08 m instead of 0.8 m; upright plates/diamond keep their old
   elevations. Coarse interpolation may still differ on uneven terrain.
@@ -124,20 +135,22 @@ WHAT THIS IS
   Two consecutive unique ball/record position matches identify a
   candidate among eight Eagle types. Ambiguity keeps EAGLE ?. No Runtime needed.
   Aircraft direction and retirement still use actual flight tracking.
-  RC5 starts matching before the settled guide is created. Fresh range geometry
-  can await confirmation for at most 0.45 s; air/sky/landing cues remain visible.
-  A failed reader or disabled adaptive ranges use generic geometry immediately.
-  Empty/ambiguous results fall back after the bounded wait. Very late native
+  RC5 starts matching before the settled guide is created. A fresh unknown candidate
+  does not draw Eagle impact geometry; its aircraft arrow remains independent.
+  A previously confirmed Eagle stays visible during a temporary reader failure.
+  Classification uses the existing 5 Hz cadence with live candidates even if both
+  name/range UI options are off; no candidate means no type query. Very late native
   records may still adapt later. Lost provisional beacons expire after 0.75 s
   and must settle/match afresh. A new throw never inherits a previous candidate.
-  Napalm's user-calibrated REF is 66.67 m long and 20 m wide, centered on the same
-  beacon with the same incoming heading; this is not a measured damage/fire boundary.
-  Other REF labels identify estimated reference footprints. Multi-bomb strips change
-  length/width by type; strafe extends forward, 500kg uses a 25 m reference circle.
-  These are NOT measured damage/safe boundaries. 110mm target remains unknown:
+  User-selected shared transverse REF: Airstrike, Cluster, Smoke, Gas and Napalm
+  use 66.67 m total length and 20 m total width, centered on the same beacon and
+  incoming heading. This is not a measured damage/fire boundary.
+  These remain display references, not measured damage/safe boundaries. Strafing
+  extends forward; 500kg uses a 25 m reference circle. 110mm target remains unknown:
   its generic direction guide is retained, labelled 110MM TARGET ?.
   MOM options 具体飞鹰名称（测试） and 按战备调整参考范围（测试） default ON.
-  They save independently; disabling both stops type reads.
+  They save independently; classification still polls active candidates when both
+  are disabled and does not query when there is no candidate.
   EXPERIMENTAL TRUE FILL: actual retained world-GUI triangles replace scan lines
   for aircraft arrows/shafts, sky shafts/heads, ground triangles, the diamond
   and moving panels, their rims/names, and white reference borders.
@@ -160,8 +173,9 @@ WHAT THIS IS
   This is a separate test candidate; 1.9.10 remains the stable release.
   Ground and aircraft guides retire together on a confirmed departure climb,
   without waiting for the aircraft object to despawn. Live guide count has no
-  numerical limit. Unknown/range-disabled ground is 200 m long and 12 m wide; known
-  types use the reference bounds above. All its direction
+  numerical limit. Only confirmed known Eagle types draw an impact guide. A confirmed
+  Eagle with adaptive range disabled uses the 200 m by 12 m generic corridor; unknown
+  candidates do not draw an Eagle ground/sky/cordon guide. All its direction
   heads travel. The amber landing diamond is 2.8 m tall and wide. The stem extends
   220 m behind the aircraft; the arrow extends 120 m ahead.
   Ground/sky directions latch on low attack arrival after an observed descent:

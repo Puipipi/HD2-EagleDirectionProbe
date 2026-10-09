@@ -34,6 +34,7 @@ end
 class TerrainQueryTest(unittest.TestCase):
     def test_distant_ridge_changes_actual_ground_vertices(self):
         replay(SCENE + '''
+M.adapt_range=false -- keep the long generic footprint for distant-ridge sampling coverage
 frames(45)
 local high = 0
 for _, s in ipairs(M.seg or {}) do
@@ -142,6 +143,7 @@ assert(casts==63,'one second should complete and cache the stationary grid')
     def test_ground_arrow_sides_also_follow_the_cached_surface(self):
         scene=SCENE.replace('30 - math.abs(x - 60)', '20 - 2*math.abs(x - 85)')
         replay(scene + '''
+M.adapt_range=false -- this test measures terrain following, not a stratagem's shorter reference extent
 frames(45)
 FAKE_TIME=200
 frames(1)

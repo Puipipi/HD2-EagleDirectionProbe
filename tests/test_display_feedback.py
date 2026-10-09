@@ -35,6 +35,7 @@ _G.ModOptionsMenu=host
 class DisplayFeedbackTest(unittest.TestCase):
     def test_five_sky_arrows_stay_at_the_beacon_when_the_aircraft_moves(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 local function sky_signature()
     local kinds,points={},{}
@@ -104,6 +105,7 @@ assert(#(M.flow_seg or {})>0,'ground animation did not return after reenabling')
 
     def test_sky_has_only_arrows_and_lifts_each_arrow_above_distant_cached_ground(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 local raised=false
 for _,s in ipairs(M.flow_seg) do
@@ -168,6 +170,7 @@ assert(M.impacts[strike] and FRAME_HAS_LINES,'reenabling lost the warning')
 
     def test_animation_moves_forward_without_requerying_or_rebuilding_static_geometry(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 FAKE_TIME=200
 frames(1)
@@ -190,6 +193,7 @@ assert(raised,'animated arrows ignored cached distant terrain')
 
     def test_140_fps_keeps_motion_updates_bounded_and_clears_them_on_retirement(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 FAKE_TIME=200
 local prior,rebuilds=nil,0
@@ -209,6 +213,7 @@ assert(not FRAME_HAS_LINES and #(M.flow_seg or {})==0,'moving arrows outlived th
 
     def test_ground_symbols_are_compact_and_still_have_upright_landing_cues(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 local ymax,top=0,0
 for _,s in ipairs(M.seg or {}) do

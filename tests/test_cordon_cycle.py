@@ -64,7 +64,7 @@ assert(math.abs(center()-a-2)<0.001,'panel caching changed ten metres per second
 
     def test_three_per_side_keep_equal_spacing_and_labels_over_full_wraps(self):
         for renderer in ('', GUI):
-            for kind,lo,hi in ((18,-60,60),(30,-5,55),(3,-25*3.141592653589793/2,25*3.141592653589793/2)):
+            for kind,lo,hi in ((18,-100/3,100/3),(30,-5,55),(3,-25*3.141592653589793/2,25*3.141592653589793/2)):
                 with self.subTest(solid=bool(renderer),kind=kind):
                     replay(renderer+TYPES+FLAT+PANELS+f'''
 type_rows[1].type={kind}

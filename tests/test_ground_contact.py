@@ -32,6 +32,7 @@ assert(max_frame<=2 and casts<=85,'closer ground cues increased collision budget
             with self.subTest(solid=bool(renderer)):
                 replay(renderer+FLAT.replace("return 0, 'HIT'",
                     "return 0.2*x+0.1*y, 'HIT'")+'''
+M.adapt_range=false
 frames(50)
 local near,far=0,0
 for _,batch in ipairs({M.seg,M.flow_seg}) do

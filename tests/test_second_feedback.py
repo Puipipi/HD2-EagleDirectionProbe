@@ -47,6 +47,10 @@ assert(next(M.impacts) ~= nil and FRAME_HAS_LINES, 'a transient tilt hid the liv
         replay('''
 M.tracks = { design = {trail = {{0, 0, 80}}, heading = {1, 0, 0}, seen = FAKE_TIME} }
 M.impacts = {[1] = {p = {0, 0, 0}, heading = {1, 0, 0}, t = FAKE_TIME}}
+M.type_profiles=require('mods/codex/eagle_stratagem_profiles')
+M.type_world=WORLD;M.type_epoch=tostring(WORLD)..':mission-one'
+M.impacts[1].stratagem_type=18;M.impacts[1].type_epoch=M.type_epoch
+M.impacts[1].type_heading_confirmed=true
 M.geom_key = nil
 tick(1)
 local alo, ahi, glo, ghi = math.huge, -math.huge, math.huge, -math.huge
@@ -60,13 +64,18 @@ for _, s in ipairs(M.seg or {}) do
     end
 end
 assert(ahi - alo <= 360 and ahi >= 100, 'air guide still dominates the scene')
-assert(ghi - glo <= 205 and ghi - glo >= 150, 'ground warning is still too long')
+assert(math.abs((ghi-glo)-200/3)<0.1, 'ground warning did not use the unified 66.67 m Eagle reference')
 ''')
 
     def test_known_planar_slope_is_not_flattened_by_distance_averaging(self):
         replay('''
 M.tracks = {design = {trail = {{30, 30, 80}}, heading = {1, 0, 0}, seen = FAKE_TIME}}
 M.impacts = {[1] = {p = {30, 30, 9}, heading = {1, 0, 0}, t = FAKE_TIME}}
+M.type_profiles=require('mods/codex/eagle_stratagem_profiles')
+M.type_world=WORLD;M.type_epoch=tostring(WORLD)..':mission-one'
+M.impacts[1].stratagem_type=18;M.impacts[1].type_epoch=M.type_epoch
+M.impacts[1].type_heading_confirmed=true
+M.adapt_range=false -- sample the full hand-defined terrain triangle, independent of the reference extent
 -- Hand-defined terrain plane z = 0.2*x + 0.1*y, sampled at three non-collinear points.
 M.ground = {{0, 0, 0, FAKE_TIME}, {100, 0, 20, FAKE_TIME}, {0, 100, 10, FAKE_TIME}}
 M.geom_key = nil

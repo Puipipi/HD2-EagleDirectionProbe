@@ -162,6 +162,29 @@ sr.Camera = {}
 sr.Gui = {}
 sr.Window = {}
 
+-- Standalone harness replays represent an identified Eagle unless the calling
+-- test replaces this lazy reader with an unknown/unsupported classification case.
+package.preload['mods/codex/eagle_stratagem_profiles'] = function()
+    local path=probe_path:gsub('eagle_direction_probe.lua$','stratagem_profiles.lua')
+    return assert(loadfile(path))()
+end
+package.preload['mods/codex/eagle_stratagem_query'] = function()
+    return {new=function() return {snapshot=function()
+        local rows={}
+        if ST.beacon_arc>0 then
+            local p=sr.Unit.world_position(BEACON)
+            if p then rows[1]={type=18,p=p,anchor={p[1],p[2]+100,p[3]}} end
+        else
+            local probe=rawget(_G,'HD2EagleDirectionProbe')
+            for _,imp in pairs(probe and probe.impacts or {}) do
+                local p=imp.p
+                if p then rows[#rows+1]={type=18,p=p,anchor={p[1],p[2]+100,p[3]}} end
+            end
+        end
+        return rows,'READY','mission-one'
+    end} end}
+end
+
 _G.stingray = sr
 _G.update = function() end
 _G.shutdown = function() end

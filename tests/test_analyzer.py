@@ -249,11 +249,15 @@ class ReadOnlyContractTest(unittest.TestCase):
     def test_no_engine_write_calls(self):
         for forbidden in ('Unit.set_local_position', 'Unit.set_local_rotation',
                           'Unit.set_local_scale', 'Material.set_vector',
-                          'Material.set_scalar', 'spawn_unit', 'destroy_unit',
-                          'Gui.triangle', 'Gui.rect', 'api.write',
-                          'WriteProcessMemory'):
+                          'Material.set_scalar', 'Gui.triangle', 'Gui.rect',
+                          'api.write', 'WriteProcessMemory'):
             self.assertNotIn(forbidden, self.source,
                              '%s appears in a no-write addon' % forbidden)
+        # Startup binding diagnostics may report these API names as data. Prohibit
+        # invocations, not the passive metadata literals.
+        for forbidden in ('spawn_unit', 'destroy_unit'):
+            self.assertIsNone(re.search(r'\b' + forbidden + r'\s*\(', self.source),
+                              '%s must not be called by the read-only addon' % forbidden)
 
     def test_line_fallback_and_isolated_triangle_renderer(self):
         """Main keeps the proven line path; only audited GUI calls enter the new module."""

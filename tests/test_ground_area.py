@@ -39,10 +39,12 @@ local queries=casts
 apply('show_ground_area',true);frames(1)
 local batch=area_faces()
 assert(#batch>0 and #batch<=80,'rectangle overlay missing or needlessly dense')
-assert(math.abs(projected_area(batch)-2400)<0.001,'airstrike reference has gaps or overlaps')
+assert(math.abs(projected_area(batch)-(4000/3))<0.001,
+    'common Eagle reference area has gaps or overlaps')
 for _,s in ipairs(batch) do for k=2,4 do
     local p=s[k]
-    assert(p[1]>=-60 and p[1]<=60 and math.abs(p[2])<=10,'fill escaped reference bounds')
+    assert(p[1]>=-100/3-0.001 and p[1]<=100/3+0.001 and math.abs(p[2])<=10,
+        'fill escaped reference bounds')
     assert(math.abs(p[3]-(0.2*p[1]+0.1*p[2])-0.06)<0.0001,'fill floats above cached slope')
 end end
 assert(casts==queries and max_frame<=2,'area option increased collision work')
@@ -143,7 +145,7 @@ for i=1,8 do
 end
 frames(300)
 local batch=area_faces()
-assert(math.abs(projected_area(batch)-19200)<0.01,
+assert(math.abs(projected_area(batch)-(32000/3))<0.01,
     'one or more teammate fills are missing: area='..projected_area(batch)..' casts='..casts..' faces='..#batch)
 local owners={}
 for _,s in ipairs(batch) do for k=2,4 do
@@ -151,7 +153,7 @@ for _,s in ipairs(batch) do for k=2,4 do
     local id=math.floor(p[1]/300+0.5)
     owners[id]=true
     local dx,dy=p[1]-id*300,p[2]
-    assert(math.abs(dx*0.6+dy*0.8)<=60.001,'area ignored heading or beacon origin')
+    assert(math.abs(dx*0.6+dy*0.8)<=100/3+0.001,'area ignored heading or beacon origin')
     assert(math.abs(-dx*0.8+dy*0.6)<=10.001,'area widened under rotation')
 end end
 for i=1,8 do assert(owners[i],'guide count was capped') end

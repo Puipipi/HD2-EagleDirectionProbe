@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc10',
+    version = '1.10.0-rc11',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -466,6 +466,62 @@ local function report_capabilities()
     return ok
 end
 
+-- A startup-only, passive binding inventory for the native-light experiment. This
+-- records Lua-visible types only: it does not call a constructor or any light API.
+local function native_light_capability_snapshot(binding)
+    local function safe_value(object, key)
+        if type(object) ~= 'table' then return nil end
+        local ok, value = pcall(function() return object[key] end)
+        if not ok then return nil end
+        return value
+    end
+    local function member_type(namespace, member)
+        local object = safe_value(binding, namespace)
+        if type(object) ~= 'table' then return 'nil' end
+        local value = safe_value(object, member)
+        return value == nil and 'nil' or type(value)
+    end
+    local fields = {
+        {'Light','set_enabled'}, {'Light','set_color'},
+        {'Light','set_intensity'}, {'Light','color'}, {'Light','intensity'},
+        {'Light','get_color'}, {'Light','get_intensity'},
+        {'Light','set_spot_angle_end'}, {'Light','set_falloff_end'},
+        {'World','spawn_unit'}, {'World','update_unit'}, {'World','destroy_unit'},
+        {'Unit','node'}, {'Unit','light'}, {'Unit','num_lights'}, {'Unit','has_light'},
+        {'Unit','set_local_position'}, {'Unit','set_local_rotation'},
+        {'Unit','set_unit_visibility'}, {'Unit','alive'},
+        {'Quaternion','axis_angle'}, {'Application','worlds'}, {'Application','can_get'},
+    }
+    local parts = {'v' .. M.version}
+    if type(binding) ~= 'table' then
+        parts[#parts+1] = 'stingray=' .. type(binding)
+    else
+        parts[#parts+1] = 'stingray=table'
+    end
+    for _, namespace in ipairs({'Light','World','Unit','Quaternion','Application'}) do
+        parts[#parts+1] = namespace .. '=' .. type(safe_value(binding,namespace))
+    end
+    for _, field in ipairs(fields) do
+        parts[#parts+1] = field[1] .. '.' .. field[2] .. '=' .. member_type(field[1],field[2])
+    end
+    local vector = safe_value(binding, 'Vector3')
+    local callable = 'unknown'
+    if type(vector) == 'function' then callable = true end
+    if type(vector) == 'table' then
+        local ok, meta = pcall(getmetatable, vector)
+        if ok and meta == nil then callable = false
+        elseif ok and type(meta) == 'table' then
+            local call_ok, call = pcall(function() return meta.__call end)
+            if call_ok then callable = type(call) == 'function' end
+        end
+    end
+    parts[#parts+1] = 'Vector3=' .. type(vector) .. '(callable=' .. tostring(callable) .. ')'
+    for _, axis in ipairs({'x','y','z'}) do
+        parts[#parts+1] = 'Vector3.' .. axis .. '=' .. member_type('Vector3',axis)
+    end
+    log('native-light capabilities: ' .. table.concat(parts, ' '))
+end
+
 local function vector_xyz(value)
     if value == nil then return nil end
     local x, y, z
@@ -617,9 +673,19 @@ local next_sample = 0
 local active_call = nil
 local seen_beacon_ids = {}
 local call_serial = 0
+local next_beacon_trace_id = 0
 -- unit handle -> {p = {x,y,z}, moved = bool}. Keyed by the handle, not the identity
 -- string, because that string is the resource hash shared by every beacon.
 local beacon_motion = {}
+
+local function log_beacon_trace(rec, event, call_id, current_p)
+    if not rec then return end
+    local p = current_p or rec.p or {0,0,0}
+    log(string.format('beacon B%d %s strike=%s call=%s p=%.1f,%.1f,%.1f '
+        .. 'delta=%.1f,%.1f,%.1f speed=%.1f peak=%.1f',
+        rec.trace_id, event, tostring(rec.strike_id or '-'), tostring(call_id or '-'),
+        p[1],p[2],p[3],rec.dx or 0,rec.dy or 0,rec.dz or 0,rec.speed or 0,rec.peak or 0))
+end
 
 -- Each entry carries the query it came from, so the log says which stratagem a call
 -- was, not merely where the aircraft went.
@@ -629,9 +695,14 @@ local function json_points(entries, want_pose)
         local unit = entry.unit
         local p = world_position(unit)
         if p then
+            local motion = beacon_motion[unit]
             local row = string.format('{"src":%s,"id":%s,"p":[%.4f,%.4f,%.4f]',
                 json_string(entry.src or '?'), json_string(unit_identity(unit) or '?'),
                 p[1], p[2], p[3])
+            if motion then
+                row = row .. string.format(',"trace":%d,"motion":%s',
+                    motion.trace_id, json_string(motion.state or 'observed'))
+            end
             if want_pose and type(sr.Unit.world_pose) == 'function'
                 and type(sr.Matrix4x4) == 'table' and sr.Matrix4x4.forward then
                 local okt, pose = pcall(sr.Unit.world_pose, unit, 1)
@@ -1054,7 +1125,12 @@ local function sample_body()
         local p = world_position(entry.unit)
         local rec = p and beacon_motion[entry.unit]
         if p and rec == nil then
-            beacon_motion[entry.unit] = { p = p, t = now }
+            next_beacon_trace_id = next_beacon_trace_id + 1
+            beacon_motion[entry.unit] = {
+                p = p, t = now, trace_id = next_beacon_trace_id, state = 'observed',
+                peak = 0,
+            }
+            rec = beacon_motion[entry.unit]
         elseif p then
             if not rec.settled and now-(rec.last_seen or rec.t or now)>0.75 then
                 rec.type_candidate,rec.settle_since=nil,nil
@@ -1063,12 +1139,16 @@ local function sample_body()
             local dx, dy, dz = p[1] - rec.p[1], p[2] - rec.p[2], p[3] - rec.p[3]
             local speed = dt > 0 and (math.sqrt(dx * dx + dy * dy + dz * dz) / dt) or 0
             if speed > (rec.peak or 0) then rec.peak = speed end
+            rec.dx,rec.dy,rec.dz,rec.speed = dx,dy,dz,speed
             if speed > THROW_SPEED_MPS then
                 if not rec.thrown or rec.retired or (rec.recover_until and now>rec.recover_until) then
                     rec.retired,rec.log_started=nil,nil
                     M.strike_serial=(M.strike_serial or 0)+1
                     rec.strike_id=M.strike_serial
                     rec.born=now
+                    rec.state = 'flying'
+                    rec.trace_call_id = nil
+                    log_beacon_trace(rec, 'throw', 'pending', p)
                     fast_now = entry.unit
                 end
                 -- A held pause / bounce is not the final impact. Withdraw that provisional
@@ -1077,15 +1157,18 @@ local function sample_body()
                     M.impacts[rec.strike_id]=nil
                     M.geom_key,M.flow_key=nil,nil
                     log(string.format('strip %d withdrawn: beacon resumed flight',rec.strike_id))
+                    log_beacon_trace(rec, 'withdraw', rec.trace_call_id, p)
+                    rec.state = 'flying'
                 end
                 rec.thrown = true
+                rec.state = 'flying'
                 rec.type_candidate=nil
                 rec.guide_born,rec.recover_until=nil,nil
                 rec.settled = nil
                 rec.settle_since = nil
             elseif rec.thrown and not rec.settled and speed < THROW_SPEED_MPS / 4 then
                 rec.settle_since=rec.settle_since or now
-                if now-rec.settle_since>=0.35 then rec.settled=now end
+                if now-rec.settle_since>=0.35 then rec.settled=now; rec.state='settled' end
             elseif not rec.settled then
                 rec.settle_since=nil
                 rec.type_candidate=nil
@@ -1118,8 +1201,10 @@ local function sample_body()
             and (not rec.recover_until or now<=rec.recover_until) then
             local imp = M.impacts[rec.strike_id]
             if imp == nil then
-                local heading, aircraft = nearest_heading(p)
-                imp = { p = { p[1], p[2], p[3] }, heading = heading, aircraft = aircraft,
+                -- Keep a landed beacon as a classification candidate first. An
+                -- unconfirmed support beacon must never inherit the nearest Eagle's
+                -- approach axis merely because it shares the generic beacon resource.
+                imp = { p = { p[1], p[2], p[3] },
                     t = now, born = rec.guide_born or now, beacon = entry.unit, last_seen = now }
                 local candidate=rec.type_candidate
                 if candidate then
@@ -1131,12 +1216,10 @@ local function sample_body()
                 M.impacts[rec.strike_id] = imp
                 log(string.format('strip %d landed: beacon=%s position=%.1f,%.1f,%.1f',
                     rec.strike_id,tostring(entry.unit),p[1],p[2],p[3]))
+                log_beacon_trace(rec, 'landed', rec.trace_call_id, p)
             else
                 imp.p = { p[1], p[2], p[3] }
                 imp.t = now
-                if imp.aircraft == nil then
-                    imp.heading, imp.aircraft = nearest_heading(p)
-                end
             end
         end
     end
@@ -1156,6 +1239,11 @@ local function sample_body()
     -- current call so the two throws are not merged into one record.
     if fast_now and active_call ~= nil and active_call.primary_unit ~= nil
         and fast_now ~= active_call.primary_unit then
+        log_beacon_trace(beacon_motion[active_call.primary_unit], 'call-switch-out',
+            beacon_motion[active_call.primary_unit]
+                and (beacon_motion[active_call.primary_unit].trace_call_id or active_call.id)
+                or active_call.id)
+        log_beacon_trace(beacon_motion[fast_now], 'call-switch-in', 'pending-next-call')
         log(string.format('call %d closed early: a different beacon was thrown',
             active_call.id))
         emit({ kind = 'call_end', t = now, call = active_call.id, note = 'new throw' })
@@ -1167,7 +1255,12 @@ local function sample_body()
         begin_call(now, beacon_entries)
         if active_call then
             active_call.primary_unit = thrown
-            if beacon_motion[thrown] then beacon_motion[thrown].log_started=true end
+            if beacon_motion[thrown] then
+                local rec = beacon_motion[thrown]
+                rec.log_started=true
+                rec.trace_call_id = active_call.id
+                log_beacon_trace(rec, 'call-bound', active_call.id)
+            end
         end
     end
 
@@ -1664,6 +1757,18 @@ local function player_position(world)
 end
 
 local GENERIC_BOUNDS={shape='direction',lo=-100,hi=100,half=6,estimated=false}
+local function confirmed_guide(imp)
+    return imp~=nil and M.type_profiles~=nil and M.type_profiles.catalog~=nil
+        and M.type_profiles.catalog[imp.stratagem_type]~=nil
+end
+local function release_track_target_if_unused(unit,skip_id)
+    if unit==nil then return end
+    for id,imp in pairs(M.impacts) do
+        if id~=skip_id and confirmed_guide(imp) and imp.aircraft==unit then return end
+    end
+    local track=M.tracks[unit]
+    if track then track.has_target,track.near_target=nil,nil end
+end
 local function display_bounds(imp)
     if M.adapt_range and M.type_profiles then return M.type_profiles.bounds(imp.stratagem_type) end
     return GENERIC_BOUNDS
@@ -1675,8 +1780,8 @@ end
 local function initial_type_display(now)
     for id,imp in pairs(M.impacts) do
         imp.type_display_started=imp.type_display_started or now
-        -- Await the conservative second match briefly, rather than flashing a
-        -- generic footprint. Aircraft/sky/landing point remain visible meanwhile.
+        -- Await the conservative second match without drawing a generic Eagle
+        -- footprint. The aircraft track stays visible while this impact is unconfirmed.
         local waiting=M.adapt_range and not imp.stratagem_type and M.type_provider~=nil
             and M.type_status=='READY' and now-imp.type_display_started<0.45
         if waiting~=imp.type_display_wait then
@@ -1704,8 +1809,7 @@ local function type_tick(world,now)
             targets[rec.strike_id]=rec.type_candidate
         end
     end
-    if next(targets)==nil or (not M.show_type and not M.adapt_range)
-        or now<(M.type_next or 0) then initial_type_display(now);return end
+    if next(targets)==nil or now<(M.type_next or 0) then initial_type_display(now);return end
     M.type_next=now+0.2
     if M.type_world~=world then
         M.type_world,M.type_provider,M.type_epoch=world,nil,nil
@@ -1733,6 +1837,18 @@ local function type_tick(world,now)
         local changed=M.type_profiles.associate(targets,rows,now,M.type_epoch or tostring(world))
         if changed>0 then M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil end
         for id,imp in pairs(M.impacts) do
+            local confirmed=confirmed_guide(imp)
+            if confirmed and not imp.heading then
+                imp.heading,imp.aircraft=nearest_heading(imp.p)
+                imp.type_heading_confirmed=true
+                M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil
+            elseif not confirmed and imp.type_heading_confirmed then
+                local old_aircraft=imp.aircraft
+                imp.heading,imp.aircraft,imp.type_heading_confirmed=nil,nil,nil
+                imp.attack_axis_locked=nil
+                release_track_target_if_unused(old_aircraft,id)
+                M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil
+            end
             M.type_labels[id]=type_label(imp)
             if imp.stratagem_type and imp.type_logged~=imp.stratagem_type then
                 imp.type_logged=imp.stratagem_type
@@ -1812,7 +1928,13 @@ local function terrain_tick()
     if not M.show_ground_border and not M.show_ground_triangles and not M.show_sky
         and not (M.show_ground_area and M.solid_active) then return end
     local now=os.clock()
-    if now<(M.terrain_retry_at or 0) or next(M.impacts)==nil then return end
+    local has_confirmed=false
+    for _,imp in pairs(M.impacts) do
+        if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type] then
+            has_confirmed=true;break
+        end
+    end
+    if now<(M.terrain_retry_at or 0) or not has_confirmed then return end
     local world=main_world()
     if not world then return end
     if M.terrain_world~=world then
@@ -1835,7 +1957,8 @@ local function terrain_tick()
     end
     local calls={}
     for call,imp in pairs(M.impacts) do
-        if not imp.type_display_wait and collision_grid(imp) then calls[#calls+1]=call end
+        if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type]
+            and not imp.type_display_wait and collision_grid(imp) then calls[#calls+1]=call end
     end
     table.sort(calls)
     if #calls==0 then return end
@@ -1970,10 +2093,12 @@ local function ground_geometry_key()
         tostring(M.show_ground_triangles),tostring(M.show_cordon),tostring(M.solid_active),
         tostring(M.show_type),tostring(M.adapt_range)}
     for id,imp in pairs(M.impacts) do
+        if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type] then
         local h=imp.heading
         parts[#parts+1]=string.format('%s:%.1f,%.1f,%.1f:%s:%s',tostring(id),
             imp.p[1],imp.p[2],imp.p[3],h and string.format('%.2f,%.2f',h[1],h[2]) or '-',
             tostring(imp.stratagem_type)..':'..tostring(imp.type_display_wait))
+        end
     end
     table.sort(parts)
     return table.concat(parts,'|')
@@ -1989,7 +2114,11 @@ local function build_geometry(ground_key)
     -- kilometres away turned a 120 m ribbon into a 41 m wide fan - which the geometry box in the
     -- log exposed (y spanning 41 m where sub-metre was expected).
     M.anchor = nil
-    for _, imp in pairs(M.impacts) do M.anchor = M.anchor or imp.p end
+    for _, imp in pairs(M.impacts) do
+        if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type] then
+            M.anchor = M.anchor or imp.p
+        end
+    end
     for _, track in pairs(M.tracks) do
         if not track.finished then
             local tr = track.trail
@@ -2194,7 +2323,8 @@ local function build_geometry(ground_key)
         local aircraft_seg=seg
         seg={}
         for _, imp in pairs(M.impacts) do
-            if imp.heading and (M.show_ground_border or M.show_ground_triangles
+            if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type]
+                and imp.heading and (M.show_ground_border or M.show_ground_triangles
                 or (M.show_ground_area and M.solid_active)) then
                 add_strip(imp, imp.heading)
             end
@@ -2409,6 +2539,7 @@ local function ground_flow()
     local seg={}
     local distance=bucket/GROUND_FLOW_HZ*GROUND_FLOW_SPEED
     for _,imp in pairs(M.impacts) do
+        if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type] then
         local bounds=display_bounds(imp)
         local head=imp.heading
         local len=head and math.sqrt(head[1]^2+head[2]^2) or 0
@@ -2439,6 +2570,7 @@ local function ground_flow()
             end
             if M.show_sky then add_sky_corridor(seg,imp,distance) end
         end
+        end
     end
     if cordon then
         -- Nameplates carry most of the moving mesh. Reuse complete immutable
@@ -2448,10 +2580,12 @@ local function ground_flow()
         if panel_key~=M.cordon_key then
             local panels={}
             for _,imp in pairs(M.impacts) do
+                if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type] then
                 local h=imp.heading
                 local len=h and math.sqrt(h[1]^2+h[2]^2) or 0
                 if len>0 and not imp.type_display_wait then
                     add_cordon_panels(panels,imp,h[1]/len,h[2]/len,panel_bucket/10*GROUND_FLOW_SPEED)
+                end
                 end
             end
             M.cordon_seg,M.cordon_key=panels,panel_key
@@ -2639,6 +2773,7 @@ local function hide_line()
     M.seg_count = 0
 end
 
+local native_confirmed_impacts={}
 local function native_light_tick()
     if not M.show_native_light_probe or M.selftest then
         if M.native_light_probe and M.native_light_probe.world then M.native_light_probe:release() end
@@ -2657,7 +2792,14 @@ local function native_light_tick()
         end
     end
     if M.native_light_probe then
-        local ok,_,status,count=pcall(M.native_light_probe.sync,M.native_light_probe,main_world(),M.impacts,now)
+        for id in pairs(native_confirmed_impacts) do native_confirmed_impacts[id]=nil end
+        for id,imp in pairs(M.impacts) do
+            if M.type_profiles and M.type_profiles.catalog[imp.stratagem_type] then
+                native_confirmed_impacts[id]=imp
+            end
+        end
+        local ok,_,status,count=pcall(M.native_light_probe.sync,M.native_light_probe,main_world(),
+            native_confirmed_impacts,now)
         if ok then M.native_light_status,M.native_light_count=status,count
         else
             M.native_light_status='native light unavailable: '..tostring(_)
@@ -2788,9 +2930,19 @@ local function corridor_tick()
     -- Only unassociated calls use beacon disappearance / age as fallback signals.
     local live = {}
     for call, imp in pairs(M.impacts) do
-        if imp.aircraft == nil then imp.heading, imp.aircraft = nearest_heading(imp.p) end
+        local confirmed=confirmed_guide(imp)
+        if confirmed and imp.aircraft == nil then
+            imp.heading, imp.aircraft = nearest_heading(imp.p)
+            imp.type_heading_confirmed=true
+        end
+        if not confirmed and imp.type_heading_confirmed then
+            local old_aircraft=imp.aircraft
+            imp.heading,imp.aircraft,imp.type_heading_confirmed=nil,nil,nil
+            imp.attack_axis_locked=nil
+            release_track_target_if_unused(old_aircraft,call)
+        end
         local track = imp.aircraft and M.tracks[imp.aircraft] or nil
-        if track then
+        if confirmed and track then
             track.has_target = true
             local p = track.trail[#track.trail]
             if p and (p[1] - imp.p[1]) ^ 2 + (p[2] - imp.p[2]) ^ 2 <= 220 ^ 2
@@ -2802,7 +2954,7 @@ local function corridor_tick()
         -- Latch this strike's attack axis on low, close arrival; never resume steering
         -- after that gate. Far approach and provisional upward tilts still remain live.
         local climbing = track and attack_climbing(track)
-        if track and not imp.attack_axis_locked and track.heading
+        if confirmed and track and not imp.attack_axis_locked and track.heading
             and track.heading[3] <= 0.3 and not climbing then
             imp.heading = track.heading
             local p=track.trail[#track.trail]
@@ -2813,7 +2965,7 @@ local function corridor_tick()
             end
         end
         local gone = imp.beacon and now - (imp.last_seen or imp.t) > IMPACT_GONE_S
-        local finished = imp.aircraft ~= nil and (track == nil or track.finished)
+        local finished = confirmed and imp.aircraft ~= nil and (track == nil or track.finished)
         local fallback_end = imp.aircraft == nil
             and (gone or (now - (imp.born or imp.t)) > IMPACT_TTL_S)
         if finished or fallback_end then
@@ -2977,6 +3129,7 @@ local function install()
     end
     log(string.format('v%s installed (no writes to game memory; draws the Eagle corridor)',
         M.version))
+    native_light_capability_snapshot(sr)
     local capable = report_capabilities()
     if not capable then
         M.status = 'no_engine_api'

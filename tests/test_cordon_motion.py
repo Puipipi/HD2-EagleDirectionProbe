@@ -8,6 +8,7 @@ from test_terrain_query import SCENE
 class CordonMotionTest(unittest.TestCase):
     def test_panels_and_their_labels_move_at_ten_metres_per_second_on_cached_terrain(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 FAKE_TIME=201
 frames(1)
@@ -28,6 +29,7 @@ assert(M.ground_seg==static and M.ground_builds==builds and casts==oldcasts,
 
     def test_panels_animate_when_ground_triangles_and_sky_are_off_and_reuse_same_bucket(self):
         replay(SCENE + '''
+M.adapt_range=false;M.show_type=false
 M.show_ground_triangles=false;M.show_sky=false
 frames(45)
 local before=M.flow_seg
@@ -44,6 +46,7 @@ assert(#M.flow_seg==0,'disabled cordon kept its own animation alive')
     def test_cycle_stays_inside_the_corridor_with_persistent_repeated_names(self):
         replay(SCENE.replace("return math.max(0, 30 - math.abs(x - 60)), 'HIT'",
                              "return 0, 'HIT'") + '''
+M.adapt_range=false;M.show_type=false
 frames(45)
 for i=0,59 do
     FAKE_TIME=210+i*0.05;update()

@@ -229,6 +229,12 @@ for i=2,8 do
     M.impacts[i]={p={i*10,0,0},heading={1,0,0},aircraft='design',beacon=BEACON,
         last_seen=FAKE_TIME+1000,t=FAKE_TIME}
 end
+-- These are renderer/lifecycle fixture guides, not classification cases.
+M.type_profiles=require('mods/codex/eagle_stratagem_profiles')
+M.type_world=WORLD;M.type_epoch=tostring(WORLD)..':mission-one'
+for _,imp in pairs(M.impacts) do
+    imp.stratagem_type=18;imp.type_epoch=M.type_epoch;imp.type_heading_confirmed=true
+end
 apply('show_native_light_probe',true)
 for i=1,10 do local n=spawned;frames(1);assert(spawned-n<=1,'light creation burst exceeded budget') end
 assert(live_count()==8,'native light guide count capped')
