@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.9.9',
+    version = '1.9.10',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -1292,7 +1292,7 @@ local function menu_tick()
         {'show_ground_triangles','地面走廊三角',true,
             '显示放大的贴地实心三角箭头，与天空箭头以 10 m/s 顺向流动。任一地面选项开启时显示落点菱形。'},
         {'show_cordon','红色全息警戒带',true,
-            '在两条长边上方显示断续红色光片与标签，短边不显示。具体类型尚未识别，暂显示 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
+            '长边断续光片与附着标签以 10 m/s 顺向移动，短边不显示。具体类型尚未识别，暂显示 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
     local complete=true
     for _,row in ipairs(rows) do
         local key=row[1]
@@ -1853,64 +1853,6 @@ local function build_geometry(ground_key)
                     local t=side*(GROUND_HALF_M-lane*GROUND_BORDER_HALF_WIDTH_M)
                     stroke(c,at(t,-half),at(t,half),1)
                 end
-                if M.show_cordon then
-                    local o=side*half
-                    local function tape_at(t,up)
-                        local p=at(t,o)
-                        if p then p[3]=p[3]+up end
-                        return p
-                    end
-                    -- Spaced low light panels, with generous open gaps. No diagonal
-                    -- wire hatching. Each half samples the existing terrain cache.
-                    local function panel_line(kind,t0,z0,t1,z1)
-                        local a,b=tape_at(t0,z0),tape_at(t1,z1)
-                        if a and b then seg[#seg+1]={kind,a,b} end
-                    end
-                    for center=-90,90,30 do
-                        local label_panel=center==0
-                        local extent=label_panel and 3 or 5
-                        local rows=label_panel and 8 or 5
-                        local height=label_panel and 1 or 0.6
-                        for row=0,rows do
-                            local up=0.3+height*row/rows
-                            -- Only the lower baseline is bright; dim scan rows give
-                            -- the interior its transparent, lightweight appearance.
-                            local kind=row==0 and 'cordon' or 'cordon_dim'
-                            panel_line(kind,center-extent,up,center,up)
-                            panel_line(kind,center,up,center+extent,up)
-                        end
-                        -- One short upper corner catches the eye without boxing in
-                        -- the whole panel; the bright baseline anchors its bottom.
-                        panel_line('cordon',center-extent,0.3+height,center-extent+0.85,0.3+height)
-                        panel_line('cordon',center-extent,0.3+height,center-extent,0.3+height-0.2)
-                    end
-                    -- Cached world-space stroke lettering uses only LineObject.
-                    -- No verified per-beacon stratagem ID exists yet: never guess a
-                    -- teammate's type from local menu selection or shared munitions.
-                    local strokes={
-                        {0,1,0.6,1},{0,1,0,0.5},{0.6,1,0.6,0.5},
-                        {0,0.5,0.6,0.5},{0,0.5,0,0},{0.6,0.5,0.6,0},
-                        {0,0,0.6,0},{0.3,0.5,0.3,0.2},{0.28,0.02,0.32,0.02},
-                    }
-                    local glyphs={E={1,2,4,5,7},A={1,2,3,4,5,6},
-                        G={1,2,4,5,6,7},L={2,5,7},['?']={1,3,4,8,9}}
-                    local text='EAGLE ?'
-                    local pitch,height=0.56,0.7
-                    local width=(#text-1)*pitch+0.42
-                    for i=1,#text do
-                        local glyph=glyphs[text:sub(i,i)]
-                        if glyph then
-                            for _,index in ipairs(glyph) do
-                                local s=strokes[index]
-                                -- Reverse the horizontal axis on the opposite edge
-                                -- so letters read normally when viewed from outside.
-                                local a=tape_at(-side*(-width/2+(i-1)*pitch+s[1]*height),0.55+s[2]*height)
-                                local b=tape_at(-side*(-width/2+(i-1)*pitch+s[3]*height),0.55+s[4]*height)
-                                if a and b then seg[#seg+1]={'cordon_text',a,b} end
-                            end
-                        end
-                    end
-                end
             end
         end
         -- Compact filled upright diamond, 2.8 m tall / 2.8 m wide. Two filled
@@ -1962,8 +1904,70 @@ local function build_geometry(ground_key)
     return #seg
 end
 
+-- Constant stroke data is shared by all impacts and animation buckets.
+local CORDON_STROKES={
+    {0,1,0.6,1},{0,1,0,0.5},{0.6,1,0.6,0.5},
+    {0,0.5,0.6,0.5},{0,0.5,0,0},{0.6,0.5,0.6,0},
+    {0,0,0.6,0},{0.3,0.5,0.3,0.2},{0.28,0.02,0.32,0.02},
+}
+local CORDON_GLYPHS={E={1,2,4,5,7},A={1,2,3,4,5,6},
+    G={1,2,4,5,6,7},L={2,5,7},['?']={1,3,4,8,9}}
+
+local function add_cordon_panels(seg,imp,hx,hy,phase)
+    for _,side in ipairs({-1,1}) do
+        local o=side*GROUND_DISPLAY_HALF_M
+        local function at(t,up)
+            local x,y=imp.p[1]+hx*t-hy*o,imp.p[2]+hy*t+hx*o
+            local z=ground_surface_z(imp,x,y)
+            return z and {x,y,z+GROUND_LIFT_M+up} or nil
+        end
+        local function line(kind,t0,z0,t1,z1)
+            local a,b=at(t0,z0),at(t1,z1)
+            if a and b then seg[#seg+1]={kind,a,b} end
+        end
+        -- Whole panels enter/leave at the strip ends; no geometry exceeds the
+        -- existing collision grid. The label occupies the panel nearest the ball.
+        for center=-90+phase,105,30 do
+            local label_panel=center>=-15 and center<15
+            local extent=label_panel and 3 or 5
+            if center-extent>=-GROUND_HALF_M and center+extent<=GROUND_HALF_M then
+                local rows=label_panel and 8 or 5
+                local height=label_panel and 1 or 0.6
+                for row=0,rows do
+                    local up=0.3+height*row/rows
+                    local kind=row==0 and 'cordon' or 'cordon_dim'
+                    line(kind,center-extent,up,center,up)
+                    line(kind,center,up,center+extent,up)
+                end
+                line('cordon',center-extent,0.3+height,center-extent+0.85,0.3+height)
+                line('cordon',center-extent,0.3+height,center-extent,0.3+height-0.2)
+                if label_panel then
+                    -- No verified per-beacon type exists: never guess from local
+                    -- menu selection or globally shared munition resources.
+                    local text='EAGLE ?'
+                    local pitch,height=0.56,0.7
+                    local width=(#text-1)*pitch+0.42
+                    for i=1,#text do
+                        local glyph=CORDON_GLYPHS[text:sub(i,i)]
+                        if glyph then
+                            for _,index in ipairs(glyph) do
+                                local s=CORDON_STROKES[index]
+                                -- Read normally from outside each long edge.
+                                line('cordon_text',
+                                    center-side*(-width/2+(i-1)*pitch+s[1]*height),0.55+s[2]*height,
+                                    center-side*(-width/2+(i-1)*pitch+s[3]*height),0.55+s[4]*height)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
 local function ground_flow()
-    if not M.show_ground_triangles and not M.show_sky then
+    local cordon=M.show_cordon and M.show_ground_border
+    if not M.show_ground_triangles and not M.show_sky and not cordon then
         if M.flow_key~='hidden' then M.flow_seg,M.flow_key={},'hidden' end
         return M.flow_seg
     end
@@ -1972,7 +1976,9 @@ local function ground_flow()
         ..'|'..tostring(M.ground_geom_key)
     if M.flow_key==key then return M.flow_seg end
     local seg={}
-    local phase=(bucket/GROUND_FLOW_HZ*GROUND_FLOW_SPEED)%GROUND_TICK_M
+    local distance=bucket/GROUND_FLOW_HZ*GROUND_FLOW_SPEED
+    local phase=distance%GROUND_TICK_M
+    local cordon_phase=(distance+15)%30-15
     for _,imp in pairs(M.impacts) do
         local head=imp.heading
         local len=head and math.sqrt(head[1]^2+head[2]^2) or 0
@@ -1998,6 +2004,7 @@ local function ground_flow()
             end
             end
             if M.show_sky then add_sky_corridor(seg,imp,phase) end
+            if cordon then add_cordon_panels(seg,imp,hx,hy,cordon_phase) end
         end
     end
     M.flow_seg,M.flow_key=seg,key

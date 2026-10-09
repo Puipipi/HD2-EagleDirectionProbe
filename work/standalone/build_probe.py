@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.9.9'
+VERSION = '1.9.10'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -61,10 +61,12 @@ WHAT THIS IS
   14 m long and 6.4 m tall. Its centre floats 12 m above cached terrain, without
   borders. Both ground/sky move 10 m/s; motion is cached at 20 Hz.
   Ground triangles are 5.2 m long and 5.8 m wide. White ground borders use three
-  continuous strands over 0.5 m. Long edges carry seven spaced upright red light
+  continuous strands over 0.5 m. Long edges carry six/seven spaced upright red light
   panels per side, with dim scan fill, a bright baseline and a short upper bracket.
-  Panels start 1.1 m above cached ground. Central panels carry EAGLE ? lettering.
-  Tape and lettering reuse the static ground cache; they add no collision queries.
+  Panels start 1.1 m above cached ground. The panel nearest the beacon carries
+  EAGLE ? lettering. Panels and attached letters move forward at 10 m/s and wrap
+  at corridor ends, using the 20 Hz motion cache and cached terrain heights.
+  White borders/landing diamond stay static. No extra collision queries are made.
   Exact type and full strike range are not identified; no automatic range adaptation.
   Filled silhouettes use dense scan lines on the verified LineObject renderer,
   not new native GUI/material calls; very close views can reveal scan lines.
@@ -103,7 +105,8 @@ WHAT THIS IS
   Ground geometry is cached independently of aircraft movement. Scalar height
   interpolation and shared animation signatures reduce Lua CPU/allocations;
   query budgets are preserved. New borders/triangles/tape/text increase default
-  line submissions about 44% versus 1.9.8; actual game rendering cost is unverified.
+  line submissions; actual game rendering cost is unverified. Motion also adds
+  cached Lua geometry work. Disable the red tape option to reduce this work.
 
 STATUS
   Test candidate, not validated in a real mission. Fixes a ground-segment colour

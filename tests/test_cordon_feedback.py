@@ -43,7 +43,7 @@ end
 frames(45)
 local sides,levels={},{}
 local count,raised=0,false
-for _,s in ipairs(M.seg) do
+for _,s in ipairs(M.flow_seg) do
     if s[1]=='cordon' or s[1]=='cordon_dim' then
         count=count+1
         assert(math.abs(s[2][2]-s[3][2])<0.001,'red panel crossed a short edge')
@@ -76,8 +76,9 @@ assert(M.seg==static and casts==old,'red strips rebuilt or queried terrain for a
         replay(SCENE.replace("return math.max(0, 30 - math.abs(x - 60)), 'HIT'",
                              "return 0, 'HIT'") + '''
 frames(45)
+FAKE_TIME=210;update()
 local centers={}
-for _,s in ipairs(M.seg) do
+for _,s in ipairs(M.flow_seg) do
     if s[1]=='cordon' or s[1]=='cordon_dim' then
         local x0,x1=math.min(s[2][1],s[3][1]),math.max(s[2][1],s[3][1])
         local center=math.floor((x0+x1)/2/30+0.5)*30
@@ -141,12 +142,13 @@ assert(math.abs(newx-x-2.5)<0.05 and math.abs(newsky-sky-2.5)<0.05,
 assert(M.seg_count<=1250,'warning tape/text exceeded the single-strike geometry budget')
 ''')
 
-    def test_warning_text_is_cached_upright_on_both_sides_without_a_gui_api(self):
+    def test_warning_text_is_upright_on_both_sides_without_a_gui_api(self):
         replay(SCENE.replace("return math.max(0, 30 - math.abs(x - 60)), 'HIT'",
                              "return 0, 'HIT'") + '''
 frames(45)
+FAKE_TIME=210;update()
 local n,sides,low,high=0,{},math.huge,-math.huge
-for _,s in ipairs(M.seg) do
+for _,s in ipairs(M.flow_seg) do
     if s[1]=='cordon_text' then
         n=n+1
         for k=2,3 do
@@ -163,7 +165,7 @@ assert(high-low>=0.69 and low>1 and high<2.3,'warning lettering is not upright/r
 assert(next(sr.Gui)==nil,'warning text must not invent a native GUI API')
 local before=M.seg
 frames(10)
-assert(M.seg==before,'static letters regenerated every frame')
+assert(M.seg==before,'moving letters rebuilt the static ground')
 ''')
 
 
