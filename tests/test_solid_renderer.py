@@ -1,4 +1,4 @@
-"""World-space true faces, tested against the audited HD2 Lua binding semantics."""
+"""World-space faces through both HD2 wrapper and final native vertex conversion."""
 import unittest
 from pathlib import Path
 
@@ -25,14 +25,20 @@ end
 sr.Gui.triangle=function(gui,a,b,c,layer,color,...)
     assert(gui.world==WORLD and layer==100 and color and select('#',...)==0)
     next_id=next_id+1;creates=creates+1
-    -- HD2 creation swaps Y/Z before storing the vertices.
-    faces[next_id]={{a[1],a[3],a[2]},{b[1],b[3],b[2]},{c[1],c[3],c[2]}}
+    -- Creation wrapper swaps Y/Z, then the shared native vertex writer swaps back.
+    -- Earlier fixtures incorrectly stopped at the intermediate wrapper structure.
+    local function vertex(v)
+        local wrapped={v[1],v[3],v[2]}
+        return {wrapped[1],wrapped[3],wrapped[2]}
+    end
+    faces[next_id]={vertex(a),vertex(b),vertex(c)}
     return next_id
 end
 sr.Gui.update_triangle=function(gui,id,a,b,c,layer,color)
     assert(faces[id] and gui.world==WORLD and layer==100 and color)
     updates=updates+1
-    faces[id]={{a[1],a[2],a[3]},{b[1],b[2],b[3]},{c[1],c[2],c[3]}}
+    -- Update wrapper copies XYZ unchanged, then uses the same native writer.
+    faces[id]={{a[1],a[3],a[2]},{b[1],b[3],b[2]},{c[1],c[3],c[2]}}
 end
 sr.Gui.destroy_triangle=function(gui,id)
     assert(faces[id] and gui.world==WORLD)
@@ -55,19 +61,47 @@ local first={{'air',{1,2,3},{4,2,3},{1,5,6}}}
 local colors={air=sr.Color(255,255,255,255)}
 assert(r:submit(WORLD,first,{},colors))
 assert(gui_creates==1 and creates==2,'one triangle requires two opposed faces')
-assert(faces[1][1][2]==2 and faces[1][1][3]==3,'creation did not compensate Y/Z swap')
+assert(faces[1][1][2]==2 and faces[1][1][3]==3,'created face exchanged world distance and height')
 assert(faces[2][2][1]==1 and faces[2][2][2]==5,'reverse winding missing')
 local second={{'air',{9,8,7},{4,2,3},{1,5,6}}}
 local empty={}
 assert(r:submit(WORLD,second,empty,colors))
 assert(creates==2 and updates==2 and faces[1][1][2]==8 and faces[1][1][3]==7,
-    'updates recreated faces or incorrectly swapped XYZ')
+    'updated face exchanged world distance and height')
 assert(r:submit(WORLD,second,empty,colors))
 assert(updates==2,'unchanged references caused native triangle updates')
 r:clear()
 assert(destroys==2 and next(faces)==nil,'clear left retained faces behind')
 r:release()
 assert(gui_destroys==1,'world GUI not released')
+''')
+
+    def test_all_guide_faces_match_world_geometry_on_creation_update_and_id_reuse(self):
+        replay(GUI + SCENE + '''
+local function same(a,b)
+    for j=1,3 do assert(math.abs(a[j]-b[j])<0.0001,
+        'rendered face moved away from world geometry (distance/height swap)') end
+end
+local function check()
+    local index=0
+    for _,batch in ipairs({M.seg,M.flow_seg}) do
+        for _,s in ipairs(batch) do
+            if s[4] then
+                index=index+1
+                local face=faces[M.solid_renderer.ids[index]]
+                same(face[1],s[2]);same(face[2],s[3]);same(face[3],s[4])
+                index=index+1
+                face=faces[M.solid_renderer.ids[index]]
+                same(face[1],s[2]);same(face[2],s[4]);same(face[3],s[3])
+            end
+        end
+    end
+    assert(index>0,'fixture did not draw true-filled guides')
+end
+frames(1);check() -- first native creations
+frames(44);check() -- cached terrain completion and repeated updates
+for _,imp in pairs(M.impacts) do imp.p={13.7,109.1,14.5};imp.heading={0.6,0.8,0} end
+frames(45);check() -- nonzero offset, oblique heading, terrain/cache rebuild and ID reuse
 ''')
 
     def test_real_guides_contain_faces_instead_of_scan_fill_and_keep_terrain_budget(self):

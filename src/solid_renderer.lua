@@ -1,6 +1,7 @@
 -- HD2-Addon: mods/codex/eagle_solid_renderer
 -- Retained world-GUI triangle renderer. Experimental: mission validation pending.
--- HD2 bindings audited offline: creation swaps Y/Z; update passes XYZ unchanged.
+-- Full HD2 path: creation wrapper AND vertex writer swap Y/Z (net XYZ).
+-- Update wrapper copies XYZ; the shared vertex writer still swaps Y/Z (net XZY).
 -- Uses engine Lua bindings only. No gameplay writes, memory access or Runtime.
 local R={}
 
@@ -81,14 +82,14 @@ function R.new(sr)
             local id=self.ids[index]
             if id~=nil then
                 sr.Gui.update_triangle(self.gui,id,
-                    sr.Vector3(a[1],a[2],a[3]),sr.Vector3(b[1],b[2],b[3]),
-                    sr.Vector3(c[1],c[2],c[3]),100,color)
-            else
-                -- Compensate the HD2 creation binding's axis swap. Native objects
-                -- are made in this submitting frame and never cached in Lua.
-                id=sr.Gui.triangle(self.gui,
                     sr.Vector3(a[1],a[3],a[2]),sr.Vector3(b[1],b[3],b[2]),
                     sr.Vector3(c[1],c[3],c[2]),100,color)
+            else
+                -- Creation already converts twice; world vertices need no compensation.
+                -- Native objects are made in this frame and never cached in Lua.
+                id=sr.Gui.triangle(self.gui,
+                    sr.Vector3(a[1],a[2],a[3]),sr.Vector3(b[1],b[2],b[3]),
+                    sr.Vector3(c[1],c[2],c[3]),100,color)
                 assert(type(id)=='number' and id>=0 and id%1==0,'triangle returned invalid ID')
                 self.ids[index]=id
             end

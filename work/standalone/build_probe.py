@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc2'
+VERSION = '1.10.0-rc3'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -84,8 +84,9 @@ WHAT THIS IS
   EXPERIMENTAL TRUE FILL: actual retained world-GUI triangles replace scan lines
   for aircraft arrows/shafts, sky shafts/heads, ground triangles, the diamond
   and moving panels.
-  The native Lua signatures and create/update coordinate difference were audited
-  offline, but world appearance/material/depth still need mission validation.
+  RC3 fixes swapped distance/height in rc1/rc2: the complete native path needs
+  XYZ for creation and XZY for updates. Earlier tests stopped at the Lua wrapper
+  and missed the shared native vertex writer. Material/depth still need validation.
   MOM: 真正面填充（测试） defaults ON in this candidate. Turn it OFF to restore
   the 1.9.10 line fill. Missing APIs also fall back. Enabling see-through forces
   the line path; no unverified world-GUI depth override is used.
@@ -98,8 +99,10 @@ WHAT THIS IS
   types use the reference bounds above. All its direction
   heads travel. The amber landing diamond is 2.8 m tall and wide. The stem extends
   220 m behind the aircraft; the arrow extends 120 m ahead.
-  Ground/sky directions hold the attack axis during shallow departure climbs;
-  the aircraft arrow continues following its live pose.
+  Ground/sky directions latch on low attack arrival after an observed descent:
+  within 120 m horizontally and -30..130 m above this beacon. They no longer turn
+  with pullout yaw that starts before the nose rises. Far approach stays live;
+  the aircraft arrow keeps its live pose. Existing retirement timing is preserved.
   Coarse terrain mode queries the complete strip on a 10 m grid (63 points).
   All strips share a maximum of TWO queries per frame and a 0.5 ms soft budget.
   Heights are cached; small steering corrections do not restart sampling.

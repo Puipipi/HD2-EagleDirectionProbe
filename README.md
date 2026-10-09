@@ -4,7 +4,24 @@
 
 [下载 GitHub Release 安装包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/latest)
 
-## 当前测试版：1.10.0-rc2 战备名称与参考范围（2026-10-09）
+## 当前测试版：1.10.0-rc3 填充坐标与离场摆动修复（2026-10-09）
+
+[下载 rc3 测试包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/tag/v1.10.0-rc3)，
+或手动导入 `dist/HD2-EagleDirectionProbe-1.10.0-rc3.zip`。不自动部署。
+
+修复 rc1/rc2 真填充将距离和高度交换的问题。完整原生路径中，创建时已有两次轴转换，
+更新时只有一次；现在创建传 XYZ、更新传 XZY。旧模拟测试只检查包装层，漏掉最终顶点转换，已纠正并增加实际显示顶点比对。
+**rc1/rc2 不建议继续使用**；临时关闭 MOM“真正面填充（测试）”可恢复原线段。
+
+任务轨迹还复现了飞鹰机头仍向下时便开始离场偏航的情况。地面/天空方向现于低空进入攻击区时单向锁定，
+保持到该指引结束；远处进场及飞机旁箭头继续实时更新。锁定区域是启发式，不能保证预测所有障碍规避。
+地形预算、动效、菜单保存及原退场清理保留。167 项离线测试及六资源编译通过；
+**两处修复仍需用户实机复验**。详情见 [rc3 故障说明](docs/display-fix-1.10.0-rc3.md)。
+
+已保存的真填充关闭值会保留。导入 rc3 后需在 MOM 主动打开，才能复验新面片坐标。
+稳定版仍为 1.9.10，rc2 的类型/范围候选功能也包含在 rc3 中。
+
+## rc2 功能说明：战备名称与参考范围
 
 [下载 rc2 测试包](https://github.com/Puipipi/HD2-EagleDirectionProbe/releases/tag/v1.10.0-rc2)，
 或手动导入 `dist/HD2-EagleDirectionProbe-1.10.0-rc2.zip`。不自动部署游戏。
@@ -25,7 +42,7 @@ MOM 新增默认开启并独立保存的 **“具体飞鹰名称（测试）”*
 
 165 项离线检查及六个资源的 LuaJIT 编译门禁通过。**类型关联、世界 GUI 材质、遮挡及性能仍需实机验证**；
 稳定版仍为 1.9.10。详见 [rc2 说明与实机步骤](docs/type-range-candidate-1.10.0-rc2.md)、
-[rc1 真填充接口证据](docs/solid-fill-candidate-1.10.0-rc1.md)。
+[rc1 接口核查历史及 rc3 更正](docs/solid-fill-candidate-1.10.0-rc1.md)。
 
 ## 上个稳定版：1.9.10 光片与标签顺向流动
 

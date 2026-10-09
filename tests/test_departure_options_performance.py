@@ -43,6 +43,37 @@ end
 
 
 class DepartureOptionsPerformanceTest(unittest.TestCase):
+    def test_captured_pullout_turn_keeps_attack_axis_before_the_nose_points_up(self):
+        flight=FLIGHT.replace('return old_pos(unit)',
+            "if unit==BEACON and ST.beacon_arc>=4 then return {18.2,-4.7,14.6} end\n    return old_pos(unit)")
+        flight=flight.replace('p = {-100, 0, 100}', 'p = {200, 250, 200}')
+        replay(flight + '''
+local imp=M.impacts[next(M.impacts)]
+assert(imp.p[1]==18.2 and imp.p[2]==-4.7 and not imp.attack_axis_locked)
+-- Rounded position/forward samples from the reported rc1 mission, call 7.
+-- Yaw begins while the nose still points down, before attack_climbing becomes true.
+p,f={77.9,100,102.3},{-0.446,-0.782,-0.435};tick(4)
+assert(not imp.attack_axis_locked,'axis locked before the actual 120m arrival gate')
+p,f={49,46.5,83.2},{-0.452,-0.824,-0.340};tick(4)
+assert(imp.attack_axis_locked,'axis did not lock on the captured low arrival')
+local h={unpack(imp.heading)}
+assert(math.abs(h[1]*f[2]-h[2]*f[1])<0.00001,'latched an earlier approach heading')
+local curve={
+    {{23.9,-7.3,79.4},{-0.437,-0.885,-0.162}},
+    {{1.2,-64.8,89.6},{-0.392,-0.918,0.057}},
+    {{-16.5,-119.8,112.2},{-0.324,-0.908,0.265}},
+}
+for _,row in ipairs(curve) do
+    p,f=row[1],row[2];tick(4)
+    assert(M.impacts[next(M.impacts)]==imp,'pullout freeze retired the guide early')
+    assert(imp.heading[1]==h[1] and imp.heading[2]==h[2],
+        'ground/sky attack axis followed the pullout yaw before nose-up detection')
+end
+assert(M.tracks[AIRCRAFT].heading[2]~=h[2],'aircraft arrow stopped following its live nose')
+p,f={-28.5,-167.4,142.1},{-0.253,-0.867,0.430};tick(20)
+assert(next(M.impacts)==nil and not FRAME_HAS_LINES,'locked attack guide failed to retire')
+''')
+
     def test_shallow_departure_bank_does_not_rotate_ground_or_sky(self):
         replay(FLIGHT + '''
 local imp=M.impacts[next(M.impacts)]

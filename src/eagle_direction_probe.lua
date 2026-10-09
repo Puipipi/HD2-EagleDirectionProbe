@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc2',
+    version = '1.10.0-rc3',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -219,6 +219,8 @@ local TRAIL_MAX = 10            -- ground track points kept (about 2 s at 5 Hz)
 local TRAIL_HOLD_S = 0.75
 local DEPART_HOLD_S = 0.35    -- reject a momentary upward tilt; stop showing a committed climb
 local DEPART_RISE_M = 15      -- actual rise from the low point, not rotation alone
+local ATTACK_LOCK_RADIUS_M = 120 -- latch before pullout yaw starts with the nose still down
+local ATTACK_LOCK_HEIGHT_M = 130 -- relative to this strike's beacon, not global terrain height
 
 -- Live guides are retired by their own lifecycle, never by the number of other calls.
 local IMPACT_TTL_S = 20        -- fallback only when no aircraft was associated
@@ -2480,12 +2482,19 @@ local function corridor_tick()
                 track.near_target = true
             end
         end
-        -- Incoming steering stays live, but even a shallow climb after the low pass
-        -- is already an exit manoeuvre. Hold the last attack direction while climbing;
-        -- a return to the low level/descent resumes updates (a tilt is not retirement).
+        -- Pullout yaw starts BEFORE the nose points up in captured mission trajectories.
+        -- Latch this strike's attack axis on low, close arrival; never resume steering
+        -- after that gate. Far approach and provisional upward tilts still remain live.
         local climbing = track and attack_climbing(track)
-        if track and track.heading and track.heading[3] <= 0.3 and not climbing then
+        if track and not imp.attack_axis_locked and track.heading
+            and track.heading[3] <= 0.3 and not climbing then
             imp.heading = track.heading
+            local p=track.trail[#track.trail]
+            if track.saw_descent and p and
+                (p[1]-imp.p[1])^2+(p[2]-imp.p[2])^2<=ATTACK_LOCK_RADIUS_M^2
+                and p[3]-imp.p[3]>=-30 and p[3]-imp.p[3]<=ATTACK_LOCK_HEIGHT_M then
+                imp.attack_axis_locked=true
+            end
         end
         local gone = imp.beacon and now - (imp.last_seen or imp.t) > IMPACT_GONE_S
         local finished = imp.aircraft ~= nil and (track == nil or track.finished)
