@@ -52,6 +52,25 @@ end
 
 
 class SolidRendererTest(unittest.TestCase):
+    def test_unchanged_immutable_batches_are_not_rescanned_each_frame(self):
+        replay(GUI + '''
+local r=assert(require('mods/codex/eagle_solid_renderer').new(sr))
+local p={1,2,3}
+local static={{'air',p,{4,2,3},{1,5,6}}}
+local flow={}
+local colors={air=sr.Color(255,255,255,255)}
+assert(r:submit(WORLD,static,flow,colors))
+-- The public batch references promise immutable geometry. Instrument reads of
+-- the original point to detect redundant validation on a retained-only frame.
+local backup={p[1],p[2],p[3]}
+for i=1,3 do p[i]=nil end
+setmetatable(p,{__index=function(_,i) error('unchanged vertex was rescanned') end})
+assert(r:submit(WORLD,static,flow,colors))
+assert(updates==0 and creates==2)
+setmetatable(p,nil)
+for i=1,3 do p[i]=backup[i] end
+''')
+
     def test_retained_faces_use_correct_create_update_coordinates_and_both_windings(self):
         replay(GUI + '''
 local R=require('mods/codex/eagle_solid_renderer')
@@ -74,6 +93,25 @@ r:clear()
 assert(destroys==2 and next(faces)==nil,'clear left retained faces behind')
 r:release()
 assert(gui_destroys==1,'world GUI not released')
+''')
+
+    def test_changed_flow_updates_only_changed_faces_and_handles_shifted_offsets(self):
+        replay(GUI + '''
+local r=assert(require('mods/codex/eagle_solid_renderer').new(sr))
+local a={'air',{1,2,3},{4,2,3},{1,5,6}}
+local b={'air',{11,12,13},{14,12,13},{11,15,16}}
+local c={'air',{21,22,23},{24,22,23},{21,25,26}}
+local colors={air=sr.Color(255,255,255,255)}
+local static={a}
+assert(r:submit(WORLD,static,{b},colors))
+assert(r:submit(WORLD,static,{c},colors))
+assert(updates==2,'unchanged static face was updated with the moving nameplates')
+assert(faces[r.ids[3]][1][1]==21 and faces[r.ids[1]][1][1]==1)
+assert(r:submit(WORLD,{}, {c},colors))
+assert(updates==4 and destroys==2,'shrinking static batch left stale offset records')
+assert(faces[r.ids[1]][1][1]==21)
+assert(r:submit(WORLD,{c,a},{b},colors))
+assert(r.count==6 and faces[r.ids[5]][1][1]==11,'growing/reordered batch retained wrong positions')
 ''')
 
     def test_all_guide_faces_match_world_geometry_on_creation_update_and_id_reuse(self):
@@ -124,7 +162,7 @@ end
 assert(kinds.air and kinds.flow and kinds.sky1 and kinds.marker and kinds.cordon_dim,
     'air/ground/sky/diamond/panels were not converted to real faces')
 assert(max_frame<=2,'true fill added terrain collision queries')
-assert(M.seg_count<600,'true fill failed to reduce geometric primitives')
+assert(M.seg_count<900,'filled borders and repeated names exceeded the generic geometry budget')
 local q,old=casts,updates
 frames(5)
 assert(casts==q and updates>old,'moving faces froze or re-queried terrain')

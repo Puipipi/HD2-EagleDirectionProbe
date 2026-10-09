@@ -94,7 +94,7 @@ end
 '''
 
 
-def measure(path, strikes, frames, solid=False, types=False, type_id=18):
+def measure(path, strikes, frames, solid=False, types=False, type_id=18, renderer=None):
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp)/'CowboyBingus/Helldivers2/Logs').mkdir(parents=True)
         with patch.dict(os.environ, {'DSH_HARNESS_TMP': tmp, 'DSH_PROBE_PATH': str(path),
@@ -102,7 +102,7 @@ def measure(path, strikes, frames, solid=False, types=False, type_id=18):
             lua=LuaRuntime()
             lua.globals().BENCH_STRIKES=strikes
             lua.globals().BENCH_SOLID=solid
-            lua.globals().BENCH_RENDERER=str(ROOT/'src/solid_renderer.lua')
+            lua.globals().BENCH_RENDERER=str(renderer or ROOT/'src/solid_renderer.lua')
             lua.globals().BENCH_TYPES=types
             lua.globals().BENCH_TYPE_ID=type_id
             lua.globals().BENCH_PROFILES=str(ROOT/'src/stratagem_profiles.lua')
@@ -136,6 +136,10 @@ def main():
                             cwd=ROOT,capture_output=True,check=True).stdout
     with tempfile.TemporaryDirectory() as tmp:
         old=Path(tmp)/'baseline.lua';old.write_bytes(baseline)
+        old_renderer=Path(tmp)/'solid_renderer.lua'
+        if args.solid_fill:
+            old_renderer.write_bytes(subprocess.check_output(
+                ['git','show',args.baseline_ref+':src/solid_renderer.lua'],cwd=ROOT))
         result={'note':'Offline Lua CPU/allocation only; native renderer is fake, not game FPS.',
                 'baseline':args.baseline_ref,'frames':args.frames,'repeats':args.repeats,'scenes':{}}
         for n in (1,4,8):
@@ -143,7 +147,8 @@ def main():
             # Alternate runs so warmup/thermal scheduling affects both versions similarly.
             for _ in range(args.repeats):
                 for key,path in (('baseline',old),('current',ROOT/'src/eagle_direction_probe.lua')):
-                    rows[key].append(measure(path,n,args.frames,args.solid_fill,args.types,args.type_id))
+                    rows[key].append(measure(path,n,args.frames,args.solid_fill,args.types,args.type_id,
+                                             old_renderer if key=='baseline' and args.solid_fill else None))
             result['scenes'][n]={key:{metric:round(statistics.median(r[metric] for r in runs),4)
                                 for metric in runs[0]} for key,runs in rows.items()}
         print(json.dumps(result,ensure_ascii=False,indent=2))

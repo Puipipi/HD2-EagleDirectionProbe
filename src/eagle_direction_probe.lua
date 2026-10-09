@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc3',
+    version = '1.10.0-rc4',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -1296,7 +1296,7 @@ local function menu_tick()
         {'adapt_range','按战备调整参考范围（测试）',true,
             '唯一识别后调整参考边界：扫射为前向窄带，区域空袭为不同长宽，500kg 为半径25m参考圆。REF 不是精确伤害或安全边界；110mm目标未知，仍仅指方向。应用后保存。'},
         {'solid_fill','真正面填充（测试）',true,
-            '用真实三角面填充箭头、落点菱形与移动光片。默认开启；尚待实机验证。关闭恢复线段填充；开启透视时自动使用线段。点击应用后保存。'},
+            '用真实三角面填充箭头、落点菱形、白色边带、光片及文字。默认开启；关闭恢复线段填充；开启透视时自动使用线段。点击应用后保存。'},
         {'through_world','透视显示',false,
             '开启后，空中箭头和地面走廊会穿过地形及建筑显示。默认关闭；点击应用后生效并保存。'},
         {'show_air','飞鹰指示箭头',true,
@@ -1304,11 +1304,11 @@ local function menu_tick()
         {'show_sky','天空方向箭头',true,
             '在落点附近上空显示五枚竖直的实心→箭头，带箭杆、无边界，沿来袭方向流动。按缓存地形抬升，飞机离场后消失。'},
         {'show_ground_border','地面走廊边框',true,
-            '显示贴地的加粗连续白色边框。与地面三角箭头分开控制，默认开启。点击应用后保存。'},
+            '显示贴地的0.5米连续白色面带（真填充开启时）；线段模式使用加粗边框。与地面三角箭头分开控制，默认开启。点击应用后保存。'},
         {'show_ground_triangles','地面走廊三角',true,
             '显示放大的贴地实心三角箭头，与天空箭头以 10 m/s 顺向流动。任一地面选项开启时显示落点菱形。'},
         {'show_cordon','红色全息警戒带',true,
-            '边界断续光片与附着标签以 10 m/s 移动，直带仅在长边；参考圆沿周界移动。名称唯一识别后显示，否则 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
+            '等尺寸切角红色薄光片，每片固定带字，以 10 m/s 移动，直带仅在长边；参考圆沿周界移动。名称唯一识别后显示，否则 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
     local complete=true
     for _,row in ipairs(rows) do
         local key=row[1]
@@ -1426,9 +1426,9 @@ end
 -- Colours are rebuilt per submission, like the vectors. Caching them was the same mistake:
 -- sr.Color allocates in the temp arena too, and this mod restores that arena every frame.
 local function colour(kind)
-    if kind=='cordon_text' then return sr.Color(245,255,160,150) end
-    if kind=='cordon' then return sr.Color(195+12*math.sin(os.clock()*1.6),255,40,60) end
-    if kind=='cordon_dim' then return sr.Color(65,255,30,50) end
+    if kind=='cordon_text' then return sr.Color(250,255,225,215) end
+    if kind=='cordon' then return sr.Color(215+10*math.sin(os.clock()*1.6),255,55,65) end
+    if kind=='cordon_dim' then return sr.Color(48,255,30,50) end
     if kind == 'marker' then return sr.Color(255, 255, 210, 90) end
     if kind == 'flow' then return sr.Color(235, 230, 255, 255) end
     local index=tonumber(kind:match('^sky(%d)$'))
@@ -1977,7 +1977,36 @@ local function build_geometry(ground_key)
         local steps = math.max(1, math.ceil((bounds.hi-bounds.lo) / GROUND_SEG_M))
 
         if M.show_ground_border then
-            if bounds.shape=='circle' then
+            if M.solid_active then
+                local w=GROUND_BORDER_HALF_WIDTH_M
+                if bounds.shape=='circle' then
+                    local inner,outer=bounds.radius-w,bounds.radius+w
+                    for k=1,48 do
+                        local a,b=(k-1)*math.pi*2/48,k*math.pi*2/48
+                        add_quad(seg,at(inner*math.cos(a),inner*math.sin(a)),
+                            at(outer*math.cos(a),outer*math.sin(a)),
+                            at(outer*math.cos(b),outer*math.sin(b)),
+                            at(inner*math.cos(b),inner*math.sin(b)),c)
+                    end
+                else
+                    for _,side in ipairs({-1,1}) do
+                        for k=1,steps do
+                            local a=bounds.lo+(bounds.hi-bounds.lo)*(k-1)/steps
+                            local b=bounds.lo+(bounds.hi-bounds.lo)*k/steps
+                            add_quad(seg,at(a,side*half-w),at(b,side*half-w),
+                                at(b,side*half+w),at(a,side*half+w),c)
+                        end
+                    end
+                    local across=math.max(1,math.ceil(2*half/GROUND_SEG_M))
+                    for _,ends in ipairs({{bounds.lo,bounds.lo+2*w},{bounds.hi-2*w,bounds.hi}}) do
+                        for k=1,across do
+                            local a,b=-half+2*half*(k-1)/across,-half+2*half*k/across
+                            add_quad(seg,at(ends[1],a),at(ends[2],a),
+                                at(ends[2],b),at(ends[1],b),c)
+                        end
+                    end
+                end
+            elseif bounds.shape=='circle' then
                 for lane=-1,1 do
                     local radius=bounds.radius+lane*GROUND_BORDER_HALF_WIDTH_M
                     local prev
@@ -2080,78 +2109,132 @@ local CORDON_GLYPHS={E={1,2,4,5,7},A={1,2,3,4,5,6},
     ['4']={2,3,4,6},['5']={1,2,4,6,7},['6']={1,2,4,5,6,7},['7']={1,3,6},
     ['8']={1,2,3,4,5,6,7},['9']={1,2,3,4,6,7}}
 
-local function add_cordon_panels(seg,imp,hx,hy,phase)
-    local bounds=display_bounds(imp)
-    local text=type_label(imp)
-    local pitch,text_height=0.56,0.7
-    local text_width=(#text-1)*pitch+0.42
-    local label_extent=math.max(3,text_width/2+0.5)
-    local lo,hi=bounds.lo,bounds.hi
-    if bounds.shape=='circle' then lo,hi=-math.pi*bounds.radius/2,math.pi*bounds.radius/2 end
-    local start=math.floor(lo/30)*30+phase
-    local label_center,distance=nil,math.huge
-    local target=(lo+hi)/2
-    for center=start,hi,30 do
-        local extent=math.max(5,label_extent)
-        if center-extent>=lo and center+extent<=hi and math.abs(center-target)<distance then
-            label_center,distance=center,math.abs(center-target)
+-- Templates contain only Lua coordinates, never frame-arena vectors or colours.
+-- A panel carries its name for its entire transit; no near-ball label reassignment.
+local CORDON_TEMPLATES={}
+local function cordon_template(text,solid)
+    local key=text..tostring(solid)
+    if CORDON_TEMPLATES[key] then return CORDON_TEMPLATES[key] end
+    local pitch,height=0.64,0.8
+    local width=(#text-1)*pitch+0.48
+    local extent=math.max(3.6,width/2+0.75)
+    local template={extent=extent,shapes={}}
+    local shapes=template.shapes
+    local function quad(kind,a,b,c,d,depth)
+        shapes[#shapes+1]={kind,a,b,c,depth or 0}
+        shapes[#shapes+1]={kind,a,c,d,depth or 0}
+    end
+    local function stroke(kind,x0,z0,x1,z1,w,depth)
+        if not solid then
+            shapes[#shapes+1]={kind,{x0,z0},{x1,z1},false,depth or 0}
+            return
+        end
+        local dx,dz=x1-x0,z1-z0
+        local len=math.sqrt(dx*dx+dz*dz)
+        if len<0.00001 then return end
+        local ox,oz=-dz/len*w,dx/len*w
+        quad(kind,{x0+ox,z0+oz},{x1+ox,z1+oz},
+            {x1-ox,z1-oz},{x0-ox,z0-oz},depth)
+    end
+    local bottom,top,cut=0.3,1.65,0.28
+    if solid then
+        for _,range in ipairs({{-extent+cut,0},{0,extent-cut}}) do
+            quad('cordon_dim',{range[1],bottom},{range[2],bottom},
+                {range[2],top},{range[1],top})
+        end
+        quad('cordon_dim',{-extent,bottom+0.2},{-extent+cut,bottom},
+            {-extent+cut,top},{-extent,top-0.2})
+        quad('cordon_dim',{extent-cut,bottom},{extent,bottom+0.2},
+            {extent,top-0.2},{extent-cut,top})
+    else
+        for row=0,6 do
+            local up=bottom+(top-bottom)*row/6
+            local inset=(row==0 or row==6) and cut or 0
+            stroke('cordon_dim',-extent+inset,up,0,up,0)
+            stroke('cordon_dim',0,up,extent-inset,up,0)
         end
     end
+    -- Sparse cut-corner rim, with a thin continuous illuminated base.
+    stroke('cordon',-extent+cut,bottom,0,bottom,0.035,0.015)
+    stroke('cordon',0,bottom,extent-cut,bottom,0.035,0.015)
+    stroke('cordon',-extent,bottom+0.2,-extent+cut,bottom,0.035,0.015)
+    stroke('cordon',extent-cut,top,extent,top-0.2,0.035,0.015)
+    stroke('cordon',-extent+cut,top,-extent+1.05,top,0.035,0.015)
+    stroke('cordon',extent-1.05,bottom,extent-cut,bottom,0.035,0.015)
+    for i=1,#text do
+        local glyph=CORDON_GLYPHS[text:sub(i,i)]
+        if glyph then
+            -- Adjacent collinear half-strokes become one filled bar (E/A/H...).
+            local bars={}
+            for _,index in ipairs(glyph) do
+                local v=CORDON_STROKES[index]
+                local merged=false
+                for _,b in ipairs(bars) do
+                    if v[1]==v[3] and b[1]==b[3] and v[1]==b[1]
+                        and math.max(v[2],v[4])>=math.min(b[2],b[4])
+                        and math.max(b[2],b[4])>=math.min(v[2],v[4]) then
+                        b[2],b[4]=math.min(v[2],v[4],b[2],b[4]),math.max(v[2],v[4],b[2],b[4])
+                        merged=true;break
+                    end
+                end
+                if not merged then bars[#bars+1]={v[1],v[2],v[3],v[4]} end
+            end
+            for _,v in ipairs(bars) do
+            stroke('cordon_text',-width/2+(i-1)*pitch+v[1]*height,0.57+v[2]*height,
+                -width/2+(i-1)*pitch+v[3]*height,0.57+v[4]*height,0.028,0.04)
+            end
+        end
+    end
+    -- Shared triangle corners are transformed and sampled only once per panel.
+    local vertices,ids={},{}
+    for _,shape in ipairs(shapes) do
+        for k=2,shape[4] and 4 or 3 do
+            local v=shape[k]
+            local id=v[1]..'|'..v[2]..'|'..shape[5]
+            if not ids[id] then
+                vertices[#vertices+1]={v[1],v[2],shape[5]}
+                ids[id]=#vertices
+            end
+            shape[k]=ids[id]
+        end
+    end
+    template.vertices=vertices
+    CORDON_TEMPLATES[key]=template
+    return template
+end
+
+local function add_cordon_panels(seg,imp,hx,hy,distance)
+    local bounds=display_bounds(imp)
+    local template=cordon_template(type_label(imp),M.solid_active)
+    local lo,hi=bounds.lo,bounds.hi
+    if bounds.shape=='circle' then lo,hi=-math.pi*bounds.radius/2,math.pi*bounds.radius/2 end
+    -- Fewer, fully named panels instead of numerous empty light strips.
+    local spacing=math.min(80,(hi-lo)/3)
+    local phase=distance%spacing
+    local start=math.floor(lo/spacing)*spacing+phase
     for _,side in ipairs({-1,1}) do
-        local o=side*bounds.half
-        local function at(t,up)
-            local along,lateral=t,o
+        local function at(t,up,depth)
+            local along,lateral=t,side*(bounds.half+depth)
             if bounds.shape=='circle' then
-                along=bounds.radius*math.sin(t/bounds.radius)
-                lateral=side*bounds.radius*math.cos(t/bounds.radius)
+                along=(bounds.radius+depth)*math.sin(t/bounds.radius)
+                lateral=side*(bounds.radius+depth)*math.cos(t/bounds.radius)
             end
             local x,y=imp.p[1]+hx*along-hy*lateral,imp.p[2]+hy*along+hx*lateral
             local z=ground_surface_z(imp,x,y)
             return z and {x,y,z+GROUND_LIFT_M+up} or nil
         end
-        local function line(kind,t0,z0,t1,z1)
-            local a,b=at(t0,z0),at(t1,z1)
-            if a and b then seg[#seg+1]={kind,a,b} end
-        end
-        -- Whole panels enter/leave at the strip ends; no geometry exceeds the
-        -- existing collision grid. The label occupies the panel nearest the ball.
-        for center=start,hi,30 do
-            local label_panel=center==label_center
-            local extent=label_panel and label_extent or 5
-            if center-extent>=lo and center+extent<=hi then
-                local rows=label_panel and 8 or 5
-                local height=label_panel and 1 or 0.6
-                if M.solid_active then
-                    for _,ends in ipairs({{center-extent,center},{center,center+extent}}) do
-                        add_quad(seg,at(ends[1],0.3),at(ends[2],0.3),
-                            at(ends[2],0.3+height),at(ends[1],0.3+height),'cordon_dim')
-                        line('cordon',ends[1],0.3,ends[2],0.3)
-                    end
-                else
-                    for row=0,rows do
-                        local up=0.3+height*row/rows
-                        local kind=row==0 and 'cordon' or 'cordon_dim'
-                        line(kind,center-extent,up,center,up)
-                        line(kind,center,up,center+extent,up)
-                    end
+        for center=start,hi,spacing do
+            if center-template.extent>=lo and center+template.extent<=hi then
+                local vertices={}
+                for i,v in ipairs(template.vertices) do
+                    vertices[i]=at(center-side*v[1],v[2],v[3])
                 end
-                line('cordon',center-extent,0.3+height,center-extent+0.85,0.3+height)
-                line('cordon',center-extent,0.3+height,center-extent,0.3+height-0.2)
-                if label_panel then
-                    local height=text_height
-                    local width=text_width
-                    for i=1,#text do
-                        local glyph=CORDON_GLYPHS[text:sub(i,i)]
-                        if glyph then
-                            for _,index in ipairs(glyph) do
-                                local s=CORDON_STROKES[index]
-                                -- Read normally from outside each long edge.
-                                line('cordon_text',
-                                    center-side*(-width/2+(i-1)*pitch+s[1]*height),0.55+s[2]*height,
-                                    center-side*(-width/2+(i-1)*pitch+s[3]*height),0.55+s[4]*height)
-                            end
-                        end
-                    end
+                for _,shape in ipairs(template.shapes) do
+                    local a,b=vertices[shape[2]],vertices[shape[3]]
+                    if shape[4] then
+                        local c=vertices[shape[4]]
+                        if a and b and c then seg[#seg+1]={shape[1],a,b,c} end
+                    elseif a and b then seg[#seg+1]={shape[1],a,b} end
                 end
             end
         end
@@ -2171,7 +2254,6 @@ local function ground_flow()
     local seg={}
     local distance=bucket/GROUND_FLOW_HZ*GROUND_FLOW_SPEED
     local phase=distance%GROUND_TICK_M
-    local cordon_phase=(distance+15)%30-15
     for _,imp in pairs(M.impacts) do
         local bounds=display_bounds(imp)
         local head=imp.heading
@@ -2202,7 +2284,7 @@ local function ground_flow()
             end
             end
             if M.show_sky then add_sky_corridor(seg,imp,phase) end
-            if cordon then add_cordon_panels(seg,imp,hx,hy,cordon_phase) end
+            if cordon then add_cordon_panels(seg,imp,hx,hy,distance) end
         end
     end
     M.flow_seg,M.flow_key=seg,key

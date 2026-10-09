@@ -49,17 +49,17 @@ for _,s in ipairs(M.flow_seg) do
         assert(math.abs(s[2][2]-s[3][2])<0.001,'red panel crossed a short edge')
         for k=2,3 do
             local p=s[k]
-            assert(math.abs(math.abs(p[2])-6)<0.001,'tape left the upright boundary plane')
+            assert(math.abs(math.abs(p[2])-6.015)<0.016,'tape left the upright boundary plane')
             sides[p[2]<0 and -1 or 1]=true
             local surface=math.max(0,30-math.abs(p[1]-60))
             local lift=p[3]-surface
-            assert(lift>=1.09 and lift<=2.11,'warning panel ignored cached terrain or became a wall')
+            assert(lift>=1.09 and lift<=2.46,'warning panel ignored cached terrain or became a wall')
             levels[math.floor(lift*100+0.5)]=true
             if p[1]>50 and p[1]<70 and p[3]>20 then raised=true end
         end
     end
 end
-assert(count>100 and count<=280 and sides[-1] and sides[1],'bounded red panels on both sides are missing')
+assert(count>50 and count<=160 and sides[-1] and sides[1],'bounded red panels on both sides are missing')
 local n=0; for _ in pairs(levels) do n=n+1 end
 assert(n>=3 and raised,'warning tape has no vertical area or distant terrain fitting')
 local red=false
@@ -72,25 +72,27 @@ frames(10)
 assert(M.seg==static and casts==old,'red strips rebuilt or queried terrain for animation')
 ''')
 
-    def test_cordon_is_separate_light_panels_with_clear_gaps_and_no_cross_hatching(self):
+    def test_cordon_is_separate_cut_corner_panels_with_clear_gaps(self):
         replay(SCENE.replace("return math.max(0, 30 - math.abs(x - 60)), 'HIT'",
                              "return 0, 'HIT'") + '''
 frames(45)
 FAKE_TIME=210;update()
 local centers={}
+local spacing=200/3
+local phase=2100%spacing
 for _,s in ipairs(M.flow_seg) do
     if s[1]=='cordon' or s[1]=='cordon_dim' then
         local x0,x1=math.min(s[2][1],s[3][1]),math.max(s[2][1],s[3][1])
-        local center=math.floor((x0+x1)/2/30+0.5)*30
-        assert(center>=-90 and center<=90,'warning panel exceeded corridor ends')
-        assert(x0>=center-5.01 and x1<=center+5.01,'light panel bridged an intended gap')
+        local center=math.floor(((x0+x1)/2-phase)/spacing+0.5)*spacing+phase
+        assert(center>=-100 and center<=100,'warning panel exceeded corridor ends')
+        assert(x0>=center-3.61 and x1<=center+3.61,'light panel bridged an intended gap')
         local dx,dz=math.abs(s[2][1]-s[3][1]),math.abs(s[2][3]-s[3][3])
-        assert(dx<0.001 or dz<0.001,'cross-hatched wire fence survived redesign')
+        assert(dx<0.001 or dz<0.001 or (dx<=0.281 and dz<=0.201),'long cross-hatched wire fence survived redesign')
         centers[center]=true
     end
 end
 local n=0;for _ in pairs(centers) do n=n+1 end
-assert(n==7,'seven spaced panels per long side required')
+assert(n>=2 and n<=3,'two or three spaced nameplates per long side required')
 assert(M.seg_count<=1250,'panel redesign exceeded per-strike geometry budget')
 ''')
 
@@ -153,15 +155,15 @@ for _,s in ipairs(M.flow_seg) do
         n=n+1
         for k=2,3 do
             local p=s[k]
-            assert(math.abs(math.abs(p[2])-6)<0.001,'label left its upright boundary plane')
-            assert(math.abs(p[1])<5,'label should stay close to the landing point')
+            assert(math.abs(math.abs(p[2])-6.04)<0.001,'label lost its offset from the upright boundary plane')
+            assert(math.abs(p[1])<=100,'label should travel within the footprint')
             sides[p[2]<0 and -1 or 1]=true
             low,high=math.min(low,p[3]),math.max(high,p[3])
         end
     end
 end
-assert(n>=50 and n<=100 and sides[-1] and sides[1],'two world-space warning labels missing')
-assert(high-low>=0.69 and low>1 and high<2.3,'warning lettering is not upright/readable on the tape')
+assert(n>=80 and n<=160 and sides[-1] and sides[1],'repeated world-space warning labels missing')
+assert(high-low>=0.79 and low>1 and high<2.3,'warning lettering is not upright/readable on the tape')
 assert(next(sr.Gui)==nil,'warning text must not invent a native GUI API')
 local before=M.seg
 frames(10)

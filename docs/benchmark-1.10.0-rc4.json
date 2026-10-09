@@ -1,0 +1,86 @@
+{
+  "note": "Offline Lua CPU/allocation only; native renderer is fake, not game FPS.",
+  "baseline": "v1.10.0-rc3",
+  "frames": 280,
+  "repeats": 3,
+  "scenes": {
+    "1": {
+      "baseline": {
+        "ms_per_frame": 0.0364,
+        "allocated_kb_per_frame": 14.3373,
+        "lines_per_frame": 222.2,
+        "face_updates_per_frame": 50.2,
+        "face_creates": 36,
+        "active_faces": 190,
+        "solid_active": 1,
+        "type_snapshots": 10,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "current": {
+        "ms_per_frame": 0.0599,
+        "allocated_kb_per_frame": 35.7932,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 199.8929,
+        "face_creates": 468,
+        "active_faces": 1582,
+        "solid_active": 1,
+        "type_snapshots": 10,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    },
+    "4": {
+      "baseline": {
+        "ms_per_frame": 0.1037,
+        "allocated_kb_per_frame": 45.1933,
+        "lines_per_frame": 888.8,
+        "face_updates_per_frame": 200.8,
+        "face_creates": 144,
+        "active_faces": 760,
+        "solid_active": 1,
+        "type_snapshots": 10,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "current": {
+        "ms_per_frame": 0.2968,
+        "allocated_kb_per_frame": 131.2653,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 799.5714,
+        "face_creates": 1872,
+        "active_faces": 6328,
+        "solid_active": 1,
+        "type_snapshots": 10,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    },
+    "8": {
+      "baseline": {
+        "ms_per_frame": 0.2234,
+        "allocated_kb_per_frame": 86.2409,
+        "lines_per_frame": 1777.6,
+        "face_updates_per_frame": 401.6,
+        "face_creates": 288,
+        "active_faces": 1520,
+        "solid_active": 1,
+        "type_snapshots": 10,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      },
+      "current": {
+        "ms_per_frame": 0.5761,
+        "allocated_kb_per_frame": 258.465,
+        "lines_per_frame": 0.0,
+        "face_updates_per_frame": 1599.1429,
+        "face_creates": 3744,
+        "active_faces": 12656,
+        "solid_active": 1,
+        "type_snapshots": 10,
+        "ground_rebuilds": 0,
+        "terrain_queries": 0
+      }
+    }
+  }
+}

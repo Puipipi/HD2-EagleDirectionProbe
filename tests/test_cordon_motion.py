@@ -41,7 +41,7 @@ M.show_cordon=false;frames(1)
 assert(#M.flow_seg==0,'disabled cordon kept its own animation alive')
 ''')
 
-    def test_cycle_stays_inside_the_corridor_and_has_one_label_pair_near_the_beacon(self):
+    def test_cycle_stays_inside_the_corridor_with_persistent_repeated_names(self):
         replay(SCENE.replace("return math.max(0, 30 - math.abs(x - 60)), 'HIT'",
                              "return 0, 'HIT'") + '''
 frames(45)
@@ -51,13 +51,13 @@ for i=0,59 do
     for _,s in ipairs(M.flow_seg or {}) do
         if s[1]=='cordon_text' then
             labels=labels+1
-            for k=2,3 do assert(math.abs(s[k][1])<17,'name drifted away from the landing point') end
+            for k=2,3 do assert(math.abs(s[k][1])<=100,'name left the sampled corridor') end
         elseif s[1]=='cordon' or s[1]=='cordon_dim' then
             panels=panels+1
             for k=2,3 do assert(math.abs(s[k][1])<=100,'moving panel left sampled corridor') end
         end
     end
-    assert(labels==60 and panels>0,'motion wrap duplicated or dropped the label pair')
+    assert(labels>=80 and labels<=160 and panels>0,'moving nameplates disappeared or exceeded the repeated-label budget')
     assert(M.seg_count<=1250,'moving-panel cycle exceeded the single-strike geometry budget')
 end
 ''')

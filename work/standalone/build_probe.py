@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc3'
+VERSION = '1.10.0-rc4'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -63,13 +63,16 @@ WHAT THIS IS
   Each sky arrow is a single vertical plane with a shaft and pointed head (->),
   14 m long and 6.4 m tall. Its centre floats 12 m above cached terrain, without
   borders. Both ground/sky move 10 m/s; motion is cached at 20 Hz.
-  Ground triangles are 5.2 m long and 5.8 m wide. White ground borders use three
-  continuous strands over 0.5 m. Reference edges carry spaced upright red light
-  panels per side, with a dim face, a bright baseline and a short upper bracket.
-  Panels start 1.1 m above cached ground. The panel nearest the beacon carries
-  a specific REF label when matched, or EAGLE ?. Panels and attached letters move
-  forward at 10 m/s and wrap
-  at corridor ends, using the 20 Hz motion cache and cached terrain heights.
+  Ground triangles are 5.2 m long and 5.8 m wide. White ground borders are actual
+  filled 0.5 m-wide bands in true-fill mode, subdivided on cached terrain.
+  Circular references use a filled annulus. Line mode keeps the strand fallback.
+  Spaced upright red hologram plates have cut corners, a translucent face and a
+  slim lit rim. Every plate keeps its own specific REF name, or EAGLE ?.
+  Empty long plates and near-beacon label/size reassignment are removed.
+  Panels start 1.1 m above cached ground and are 1.35 m tall. Their size is fixed
+  for a given name, independent of camera distance. Names are real filled strokes
+  offset 4 cm outward from the plate, using the same GUI path as the plate.
+  Whole panels and attached names move forward at 10 m/s, using the 20 Hz cache.
   White borders/landing diamond stay static. No extra collision queries are made.
   EXPERIMENTAL TYPES: independent bounded active-record snapshots at 5 Hz with
   live guides. Two consecutive unique ball/record position matches identify a
@@ -83,14 +86,16 @@ WHAT THIS IS
   They save independently; disabling both stops type reads.
   EXPERIMENTAL TRUE FILL: actual retained world-GUI triangles replace scan lines
   for aircraft arrows/shafts, sky shafts/heads, ground triangles, the diamond
-  and moving panels.
+  and moving panels, their rims/names, and white reference borders.
   RC3 fixes swapped distance/height in rc1/rc2: the complete native path needs
   XYZ for creation and XZY for updates. Earlier tests stopped at the Lua wrapper
   and missed the shared native vertex writer. Material/depth still need validation.
   MOM: 真正面填充（测试） defaults ON in this candidate. Turn it OFF to restore
-  the 1.9.10 line fill. Missing APIs also fall back. Enabling see-through forces
+  the line-fill renderer. Missing APIs also fall back. Enabling see-through forces
   the line path; no unverified world-GUI depth override is used.
-  Faces reuse retained IDs, updating only on geometry changes. Ground faces use
+  Faces reuse retained IDs; unchanged immutable batches/records skip redundant
+  validation and native updates. Cached panel templates merge collinear letter
+  strokes and reuse triangle corners. Ground faces use
   cached-height subdivisions and make no additional terrain collision queries.
   This is a separate test candidate; 1.9.10 remains the stable release.
   Ground and aircraft guides retire together on a confirmed departure climb,

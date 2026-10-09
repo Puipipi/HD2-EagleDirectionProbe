@@ -34,25 +34,30 @@ function R.new(sr)
     for _,name in ipairs({'triangle','update_triangle','destroy_triangle'}) do
         if type(sr.Gui[name])~='function' then return nil,'Gui.'..name..' unavailable' end
     end
-    local self={ids={},status='ready',count=0}
+    local self={ids={},records={},status='ready',count=0}
 
     function self:clear()
         if self.gui and #self.ids>0 and live(sr,self.world) then
             for _,id in ipairs(self.ids) do sr.Gui.destroy_triangle(self.gui,id) end
         end
-        self.ids,self.count,self.static,self.flow={},0,nil,nil
+        self.ids,self.records,self.count,self.static,self.flow={},{},0,nil,nil
     end
 
     function self:release()
         -- Worlds can disappear before the Lua shutdown hook. Never call a native
         -- destructor through a world/GUI handle that no longer belongs to the engine.
         if self.gui and live(sr,self.world) then sr.World.destroy_gui(self.world,self.gui) end
-        self.ids,self.count,self.static,self.flow={},0,nil,nil
+        self.ids,self.records,self.count,self.static,self.flow={},{},0,nil,nil
         self.gui,self.world=nil,nil
     end
 
     function self:submit(world,static,flow,colors)
         if not live(sr,world) then self:release();return false,'world unavailable' end
+        -- Submitted Lua batches are immutable. No native work or validation is
+        -- needed while both references and the live world remain unchanged.
+        if self.world==world and self.static==static and self.flow==flow then
+            return true,self.count
+        end
         -- Validate every face before crossing the native boundary.
         local total=0
         for _,batch in ipairs({static,flow}) do
@@ -75,10 +80,10 @@ function R.new(sr)
             if not self.gui then return false,'world GUI unavailable' end
             self.world=world
         end
-        if self.static==static and self.flow==flow then return true,self.count end
         local index=0
-        local function face(a,b,c,color)
+        local function face(a,b,c,color,record)
             index=index+1
+            if self.records[index]==record then return end
             local id=self.ids[index]
             if id~=nil then
                 sr.Gui.update_triangle(self.gui,id,
@@ -93,18 +98,20 @@ function R.new(sr)
                 assert(type(id)=='number' and id>=0 and id%1==0,'triangle returned invalid ID')
                 self.ids[index]=id
             end
+            self.records[index]=record
         end
         for _,batch in ipairs({static,flow}) do
             for _,s in ipairs(batch) do
                 if s[4] then
                     local color=colors[s[1]]
-                    face(s[2],s[3],s[4],color)
-                    face(s[2],s[4],s[3],color)
+                    face(s[2],s[3],s[4],color,s)
+                    face(s[2],s[4],s[3],color,s)
                 end
             end
         end
         for i=#self.ids,index+1,-1 do
             sr.Gui.destroy_triangle(self.gui,self.ids[i]);self.ids[i]=nil
+            self.records[i]=nil
         end
         self.static,self.flow,self.count=static,flow,index
         self.status='world triangles (experimental)'
