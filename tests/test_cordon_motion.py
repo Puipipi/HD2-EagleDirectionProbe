@@ -19,9 +19,9 @@ end
 local x,label=first('cordon'),first('cordon_text')
 assert(x and label,'light panels/attached letters must be in the motion cache')
 local static,builds,oldcasts=M.ground_seg,M.ground_builds,casts
-frames(5)
-assert(math.abs(first('cordon')-x-2.5)<0.05,'light panel positions did not advance at 10 m/s')
-assert(math.abs(first('cordon_text')-label-2.5)<0.05,'lettering detached from its moving panel')
+frames(6) -- 0.30 s: three whole panel-cache periods, independent of starting phase.
+assert(math.abs(first('cordon')-x-3)<0.05,'light panel positions did not advance at 10 m/s')
+assert(math.abs(first('cordon_text')-label-3)<0.05,'lettering detached from its moving panel')
 assert(M.ground_seg==static and M.ground_builds==builds and casts==oldcasts,
     'panel motion rebuilt the static ground or queried terrain again')
 ''')

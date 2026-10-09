@@ -15,6 +15,22 @@
   copies and a validated collision query. No external Runtime or BTO installation
   is required. The addon never requests a process-write API.
 
+## Optional native-light prototype / 可选原生投光测试
+
+* **Helmet Headlamp 1.0.0** ([author page](https://www.nexusmods.com/helldivers2/mods/16320)):
+  the user explicitly authorized a temporary test using their separately installed
+  `content/helmet_headlamp/runtime_mode_profiles` unit resource. The optional MOM
+  switch defaults OFF. Normal guides do not require this resource. This package
+  redistributes neither the resource nor its controller code. An independently
+  implemented adapter creates only its own light-only helpers and changes their
+  local visual light properties; existing headlamp instances/settings are untouched.
+  Availability is checked before spawning. This is a prototype, not a permanent
+  standalone-resource solution or a claim of compatibility with other headlamp versions.
+* Native light/unit API signatures were checked against the installed reference
+  and Autodesk's [Light API](https://help.autodesk.com/cloudhelp/ENU/Stingray-Help/lua_ref/obj_stingray_Light.html)
+  and [Unit API](https://help.autodesk.com/cloudhelp/ENU/Stingray-Help/lua_ref/obj_stingray_Unit.html).
+  Game brightness, projection direction and rendering cost remain unverified.
+
 ## Read-only reference / 只读参考
 
 Facts used by this addon were read out of third-party material kept read-only in

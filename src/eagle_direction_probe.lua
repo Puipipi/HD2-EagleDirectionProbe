@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc8',
+    version = '1.10.0-rc9',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -82,6 +82,7 @@ local M = {
     show_ground_border = true,
     show_ground_triangles = true,
     show_ground_area = false,
+    show_native_light_probe = false,
     ground_lift_cm = 8,
     show_cordon = true,
     solid_fill = true,      -- experimental retained world triangles; saved MOM switch
@@ -1264,6 +1265,7 @@ local function drawing_allowed(now)
 end
 
 local function release_line()
+    if M.native_light_probe then pcall(M.native_light_probe.release,M.native_light_probe) end
     if M.solid_renderer then pcall(M.solid_renderer.release,M.solid_renderer) end
     M.solid_active,M.solid_triangles=false,0
     -- Destroy every line object we hold. Called on shutdown, on eviction, and when drawing
@@ -1280,6 +1282,7 @@ local function release_line()
     M.seg, M.geom_key, M.need_submit = nil, nil, false
     M.static_line_plan,M.flow_line_plan=nil,nil
     M.flow_seg,M.flow_key=nil,nil
+    M.cordon_seg,M.cordon_key=nil,nil
     M.ground_seg,M.ground_geom_key=nil,nil
     M.seg_count = 0
 end
@@ -1326,18 +1329,20 @@ local function menu_tick()
         {'show_air','飞鹰指示箭头',true,
             '显示跟随飞鹰机头的指示箭头和较淡尾迹。独立于天空与地面指引，默认开启。点击应用后保存。'},
         {'show_sky','天空方向箭头',true,
-            '在落点附近上空显示五枚竖直的实心→箭头，带箭杆、无边界，沿来袭方向流动。按缓存地形抬升，飞机离场后消失。'},
+            '在落点附近上空显示2～5枚竖直实心→箭头，带箭杆、无边界，按当前战备走廊首尾自适应排列并以10m/s循环；短范围减少数量，不拉伸字形。按缓存地形抬升，飞机离场后消失。'},
         {'show_ground_border','地面走廊边框',true,
             '显示贴地的0.5米连续白色面带（真填充开启时）；线段模式使用加粗边框。与地面三角箭头分开控制，默认开启。点击应用后保存。'},
         {'show_ground_triangles','地面走廊三角',true,
             '显示放大的贴地实心三角箭头，与天空箭头以 10 m/s 顺向流动。边框或三角开启时显示落点菱形。'},
         {'show_ground_area','地面红色范围光幕（测试）',false,
             '在已识别战备的参考范围内覆盖淡红色贴地三角面，不是真实投影灯光。默认关闭，可独立开启；需要按战备调整范围、真正面填充且关闭透视。只复用碰撞地形缓存，未知地面留空，随指引退场。未知类型及110mm不铺面积。REF 不是精确伤害或安全边界。点击应用后保存。'},
+        {'show_native_light_probe','原生红色投光验证（需头灯资源）',false,
+            '临时复用已安装并启用的 Helmet Headlamp 1.0 灯光资源，创建独立红色聚光灯向落点附近地面照射；不改头灯设置，不依赖 Runtime。仅验证真实受光，不代表完整打击范围或刺魟投影纹理。默认关闭；开启时抑制旧红色面片覆盖。资源/API缺失则跳过，随指引退场。应用后保存。'},
         {'ground_lift_cm','地面指引离地高度（厘米）',8,
             '调整走廊边框和地面三角高于缓存地形的距离：0～100厘米，每格1厘米，默认8厘米。红色光幕比箭头低2厘米，最低0厘米。0可能与地表闪烁；不影响天空箭头、光片和落点菱形。点击应用后生效并保存。',
             'slider',0,100,1},
         {'show_cordon','红色全息警戒带',true,
-            '等尺寸切角红色薄光片，每片固定带字，以 10 m/s 移动，直带仅在长边；参考圆沿周界移动。名称唯一识别后显示，否则 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
+            '左右各三片等间距切角红色光片，每片固定带字，以10m/s移动，到末尾循环回开头。光片几何以10Hz缓存，箭头仍20Hz。直带仅在长边，参考圆沿两侧半圆循环。名称唯一识别后显示，否则 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
     local complete=true
     for _,row in ipairs(rows) do
         local key=row[1]
@@ -1911,7 +1916,7 @@ end
 -- A floating row of arrows, without borders, independent of the aircraft's current
 -- location. Each rigid glyph is raised above its cached local surface, or the beacon
 -- height while those samples are unavailable. No additional collision queries.
-local function add_sky_corridor(seg,imp,phase)
+local function add_sky_corridor(seg,imp,distance)
     local h=imp.heading
     local len=h and math.sqrt(h[1]^2+h[2]^2) or 0
     if len<=0 then return end
@@ -1919,11 +1924,16 @@ local function add_sky_corridor(seg,imp,phase)
     local function xy(t)
         return imp.p[1]+hx*t,imp.p[2]+hy*t
     end
-    for i=1,5 do
+    local bounds=display_bounds(imp)
+    local count=math.max(2,math.min(5,math.floor((bounds.hi-bounds.lo)/24)))
+    local spacing=(bounds.hi-bounds.lo-14)/count
+    local phase=distance%spacing
+    for i=1,count do
         -- One UPRIGHT plane spanned by incoming direction and world up. A filled
         -- rectangular shaft plus pointed head reads as -> from the side. Position
-        -- travels on the same 28 m / 6 m/s conveyor, independently of aircraft pose.
-        local t=-70+(i-1)*GROUND_TICK_M+phase
+        -- travels at the ground conveyor speed inside the SAME reference ends.
+        -- Short ranges use fewer complete glyphs, without stretching their shape.
+        local t=bounds.lo+14+(i-1)*spacing+phase
         local z=imp.p[3]
         for _,along in ipairs({t,t-5,t-14}) do
             local x,y=xy(along)
@@ -1955,6 +1965,7 @@ end
 local function ground_geometry_key()
     local parts={'g'..tostring(M.ground_revision or 0),tostring(M.show_ground_border),
         tostring(M.show_ground_area),tostring(M.terrain_active),
+        tostring(M.show_native_light_probe),
         tostring(M.ground_lift_cm),
         tostring(M.show_ground_triangles),tostring(M.show_cordon),tostring(M.solid_active),
         tostring(M.show_type),tostring(M.adapt_range)}
@@ -2039,7 +2050,8 @@ local function build_geometry(ground_key)
         -- Optional static reference fill. Only known collision heights are suitable
         -- for a broad translucent surface: never bridge missing hits with beacon Z.
         -- Kept below white cues, retained with the ground batch, and not animated.
-        if M.show_ground_area and M.solid_active and bounds.estimated and bounds.shape~='direction'
+        if M.show_ground_area and not M.show_native_light_probe and M.solid_active
+            and bounds.estimated and bounds.shape~='direction'
             and not impact.type_display_wait
             and M.terrain_active and impact.terrain then
             local lift=math.max(0,GROUND_LIFT_M-0.02)
@@ -2332,11 +2344,13 @@ local function add_cordon_panels(seg,imp,hx,hy,distance)
     local template=cordon_template(type_label(imp),M.solid_active,bounds.shape=='circle')
     local lo,hi=bounds.lo,bounds.hi
     if bounds.shape=='circle' then lo,hi=-math.pi*bounds.radius/2,math.pi*bounds.radius/2 end
-    -- Opaque plates need inside/outside names. Use wider gaps so double-sided
-    -- labels do not double the moving text load or form a visually solid wall.
-    local spacing=M.solid_active and math.min(120,(hi-lo)/1.5) or math.min(80,(hi-lo)/3)
+    -- Three complete plates on each long edge, with a common conveyor phase.
+    -- Inset by the plate extent so wrapping never clips a name or drops a plate.
+    local travel=hi-lo-2*template.extent
+    if travel<=0 then return end
+    local spacing=travel/3
     local phase=distance%spacing
-    local start=math.floor(lo/spacing)*spacing+phase
+    local start=lo+template.extent+phase
     for _,side in ipairs({-1,1}) do
         local function at(t,depth)
             local along,lateral=t,side*(bounds.half+depth)
@@ -2348,8 +2362,8 @@ local function add_cordon_panels(seg,imp,hx,hy,distance)
             local z=ground_surface_z(imp,x,y)
             if z then return x,y,z+UPRIGHT_BASE_LIFT_M end
         end
-        for center=start,hi,spacing do
-            if center-template.extent>=lo and center+template.extent<=hi then
+        for index=0,2 do
+            local center=start+index*spacing
                 local xs,ys,zs,ixs,iys,izs={},{},{},{},{},{}
                 for i,c in ipairs(template.columns) do
                     xs[i],ys[i],zs[i]=at(center-side*c[1],c[2])
@@ -2378,7 +2392,6 @@ local function add_cordon_panels(seg,imp,hx,hy,distance)
                         end
                     elseif a and b then seg[#seg+1]={shape[1],a,b} end
                 end
-            end
         end
     end
 end
@@ -2395,7 +2408,6 @@ local function ground_flow()
     if M.flow_key==key then return M.flow_seg end
     local seg={}
     local distance=bucket/GROUND_FLOW_HZ*GROUND_FLOW_SPEED
-    local phase=distance%GROUND_TICK_M
     for _,imp in pairs(M.impacts) do
         local bounds=display_bounds(imp)
         local head=imp.heading
@@ -2425,9 +2437,26 @@ local function ground_flow()
                 end
             end
             end
-            if M.show_sky then add_sky_corridor(seg,imp,phase) end
-            if cordon and not imp.type_display_wait then add_cordon_panels(seg,imp,hx,hy,distance) end
+            if M.show_sky then add_sky_corridor(seg,imp,distance) end
         end
+    end
+    if cordon then
+        -- Nameplates carry most of the moving mesh. Reuse complete immutable
+        -- panels on alternate arrow ticks: 10 Hz geometry, unchanged 10 m/s speed.
+        local panel_bucket=math.floor(os.clock()*10)
+        local panel_key=tostring(panel_bucket)..'|'..tostring(M.ground_geom_key)
+        if panel_key~=M.cordon_key then
+            local panels={}
+            for _,imp in pairs(M.impacts) do
+                local h=imp.heading
+                local len=h and math.sqrt(h[1]^2+h[2]^2) or 0
+                if len>0 and not imp.type_display_wait then
+                    add_cordon_panels(panels,imp,h[1]/len,h[2]/len,panel_bucket/10*GROUND_FLOW_SPEED)
+                end
+            end
+            M.cordon_seg,M.cordon_key=panels,panel_key
+        end
+        for _,s in ipairs(M.cordon_seg) do seg[#seg+1]=s end
     end
     M.flow_seg,M.flow_key=seg,key
     M.flow_builds=(M.flow_builds or 0)+1
@@ -2495,7 +2524,7 @@ local function frame_colors()
         cordon=colour('cordon'),cordon_dim=colour('cordon_dim'),cordon_text=colour('cordon_text') }
     for i=1,5 do colors['sky'..i]=colour('sky'..i) end
     colors.sky_edge=colour('sky_edge')
-    if M.show_ground_area and M.solid_active then colors.area=colour('area') end
+    if M.show_ground_area and not M.show_native_light_probe and M.solid_active then colors.area=colour('area') end
     return colors
 end
 
@@ -2563,6 +2592,7 @@ local function submit_geometry()
     if not ok then
         M.errors = M.errors + 1
         M.draw_off = true
+        release_line()
         log('corridor drawing ERRORED and switched itself off; sampling continues')
         return false
     end
@@ -2605,7 +2635,39 @@ local function hide_line()
     M.static_line_plan,M.flow_line_plan=nil,nil
     M.flow_seg,M.flow_key=nil,nil
     M.ground_seg,M.ground_geom_key=nil,nil
+    M.cordon_seg,M.cordon_key=nil,nil
     M.seg_count = 0
+end
+
+local function native_light_tick()
+    if not M.show_native_light_probe or M.selftest then
+        if M.native_light_probe and M.native_light_probe.world then M.native_light_probe:release() end
+        M.native_light_count=0
+        return
+    end
+    local now=os.clock()
+    if not M.native_light_probe and now>=(M.native_light_retry or 0) then
+        local ok,provider,reason=pcall(function()
+            return require('mods/codex/eagle_native_light_probe').new(sr)
+        end)
+        if ok and provider then M.native_light_probe=provider
+        else
+            M.native_light_status='native light unavailable: '..tostring(ok and reason or provider)
+            M.native_light_retry=now+1
+        end
+    end
+    if M.native_light_probe then
+        local ok,_,status,count=pcall(M.native_light_probe.sync,M.native_light_probe,main_world(),M.impacts,now)
+        if ok then M.native_light_status,M.native_light_count=status,count
+        else
+            M.native_light_status='native light unavailable: '..tostring(_)
+            pcall(M.native_light_probe.release,M.native_light_probe)
+            M.native_light_probe,M.native_light_retry=nil,now+1
+        end
+    end
+    if M.native_light_status~=M.native_light_logged then
+        log('native red light: '..tostring(M.native_light_status));M.native_light_logged=M.native_light_status
+    end
 end
 
 local function draw_corridor()
@@ -2614,9 +2676,11 @@ local function draw_corridor()
     -- would have left the switch effective only on restart - the opposite of what the README
     -- promises and of what makes it an escape hatch.
     if not drawing_allowed(os.clock()) then
+        if M.native_light_probe then pcall(M.native_light_probe.release,M.native_light_probe) end
         if M.solid_renderer then pcall(M.solid_renderer.release,M.solid_renderer) end
         return
     end
+    native_light_tick()
 
     -- Drawing self-test: a fixed line beside the ship, so the line API is proven on this
     -- build while the player is still on the ship. It clears itself afterwards; the file

@@ -135,7 +135,7 @@ saved['eagle_direction_probe.show_sky']=false
 frames(45)
 assert(M.show_air==false and M.show_ground_border==false and M.show_sky==false,
     'saved false was replaced by a default')
-assert(#writes==11,'effective choices were not synchronized to MOM like Cooldown')
+assert(#writes==12,'effective choices were not synchronized to MOM like Cooldown')
 for _,w in ipairs(writes) do
     assert(w[2]==values[w[1]],'a default overwrote a saved value during registration')
 end

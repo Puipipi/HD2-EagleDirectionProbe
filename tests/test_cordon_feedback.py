@@ -73,26 +73,27 @@ assert(M.seg==static and casts==old,'red strips rebuilt or queried terrain for a
 ''')
 
     def test_cordon_is_separate_cut_corner_panels_with_clear_gaps(self):
+        from test_cordon_cycle import PANELS
         replay(SCENE.replace("return math.max(0, 30 - math.abs(x - 60)), 'HIT'",
-                             "return 0, 'HIT'") + '''
+                             "return 0, 'HIT'") + PANELS + '''
 frames(45)
 FAKE_TIME=210;update()
-local centers={}
-local spacing=200/3
-local phase=2100%spacing
 for _,s in ipairs(M.flow_seg) do
     if s[1]=='cordon' or s[1]=='cordon_dim' then
         local x0,x1=math.min(s[2][1],s[3][1]),math.max(s[2][1],s[3][1])
-        local center=math.floor(((x0+x1)/2-phase)/spacing+0.5)*spacing+phase
-        assert(center>=-100 and center<=100,'warning panel exceeded corridor ends')
-        assert(x0>=center-3.61 and x1<=center+3.61,'light panel bridged an intended gap')
+        assert(x0>=-100 and x1<=100,'warning panel exceeded corridor ends')
         local dx,dz=math.abs(s[2][1]-s[3][1]),math.abs(s[2][3]-s[3][3])
         assert(dx<0.001 or dz<0.001 or (dx<=0.281 and dz<=0.201),'long cross-hatched wire fence survived redesign')
-        centers[center]=true
     end
 end
-local n=0;for _ in pairs(centers) do n=n+1 end
-assert(n>=2 and n<=3,'two or three spaced nameplates per long side required')
+for _,side in ipairs({-1,1}) do
+    local panels=panel_intervals(false,side)
+    assert(#panels==3,'three spaced nameplates per long side required')
+    for i,p in ipairs(panels) do
+        assert(math.abs(p[2]-p[1]-7.2)<0.001,'light panel bridged an intended gap')
+        if i>1 then assert(p[1]-panels[i-1][2]>40,'panel redesign lost clear gaps') end
+    end
+end
 assert(M.seg_count<=1250,'panel redesign exceeded per-strike geometry budget')
 ''')
 

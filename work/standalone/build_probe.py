@@ -40,13 +40,14 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc8'
+VERSION = '1.10.0-rc9'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
     'mods/codex/eagle_solid_renderer': REPO / 'src/solid_renderer.lua',
     'mods/codex/eagle_stratagem_query': REPO / 'src/stratagem_query.lua',
     'mods/codex/eagle_stratagem_profiles': REPO / 'src/stratagem_profiles.lua',
+    'mods/codex/eagle_native_light_probe': REPO / 'src/native_light_probe.lua',
 }
 
 SCRIPT_EXTENSIONS = ('.bat', '.cmd', '.ps1', '.vbs', '.js', '.exe', '.dll')
@@ -59,10 +60,12 @@ WHAT THIS IS
   settled stratagem beacon. Records positions for offline analysis. It does not
   modify gameplay values or use memory writes / HD2Runtime.
   Holographic style: filled white arrows, cyan accents, small travelling ground
-  arrows, a compact filled landing diamond and five moving UPRIGHT sky arrows.
+  arrows, a compact filled landing diamond and 2-5 moving UPRIGHT sky arrows.
   Each sky arrow is a single vertical plane with a shaft and pointed head (->),
   14 m long and 6.4 m tall. Its centre floats 12 m above cached terrain, without
-  borders. Both ground/sky move 10 m/s; motion is cached at 20 Hz.
+  borders. Both ground/sky move 10 m/s; arrows are cached at 20 Hz. Sky arrows
+  wrap inside the current type-specific corridor ends; short ranges use fewer
+  complete glyphs, never stretched arrows. The range MOM switch affects both.
   Ground triangles are 5.2 m long and 5.8 m wide. White ground borders are actual
   filled 0.5 m-wide bands in true-fill mode, subdivided on cached terrain.
   Circular references use a filled annulus. Line mode keeps the strand fallback.
@@ -73,11 +76,28 @@ WHAT THIS IS
   Panels start 1.1 m above cached ground and are 1.35 m tall. Their size is fixed
   for a given name, independent of camera distance. Names are real filled strokes
   offset 4 cm outward from the plate, using the same GUI path as the plate.
-  RC6 solid plates carry readable names on both surfaces. Wider gaps leave one
-  or two plates per long edge; columns of glyph corners share cached terrain
+  RC9 solid plates carry readable names on both surfaces. Three complete plates
+  per long edge share one looping conveyor; columns of glyph corners share cached terrain
   interpolation to offset the extra inner label work. Circular plate halves are
   subdivided so opaque chords do not hide the inner letters.
-  Whole panels and attached names move forward at 10 m/s, using the 20 Hz cache.
+  Whole panels and attached names move forward at 10 m/s, using a separate 10 Hz
+  mesh cache; intermediate arrow ticks reuse the full retained panel geometry.
+  At the end, each whole plate/name wraps to the beginning with equal spacing.
+  NATIVE RED LIGHT PROTOTYPE: MOM 原生红色投光验证（需头灯资源） defaults OFF.
+  Requires the separately installed Helmet Headlamp 1.0.0 light resource, enabled
+  through its mod-manager Default Mode resource option. No third-party assets or
+  controller code are bundled. Normal direction guides do not need the headlamp.
+  Creates an OWN light-only helper 12 m above each landing point, with one downward
+  red spotlight. This validates native illumination near the beacon, not a precise
+  rectangular attack footprint or the Stingray aircraft's projected texture.
+  Original headlamp units/settings remain untouched. Missing resource/API means
+  no spotlight; existing guides continue. Turn MOM off to remove owned lights.
+  Native testing suppresses the old red face overlay for a clear comparison.
+  Creation is limited to one helper per frame, with no active-guide count cap.
+  Stationary emitters receive no position/colour updates or extra terrain queries.
+  Lights retire with guides, on disable, draw failure and shutdown. Scene teardown
+  never destroys a unit through a dead world. Real brightness, downward orientation
+  and GPU cost require a manual game test. Keep the prototype OFF after testing.
   White borders/landing diamond stay static. Ground border/triangles now clear
   cached terrain by 0.08 m instead of 0.8 m; upright plates/diamond keep their old
   elevations. Coarse interpolation may still differ on uneven terrain.

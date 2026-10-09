@@ -40,7 +40,7 @@ for frame=0,119 do
         if p and r[1]<=p[2]+0.001 then p[2]=math.max(p[2],r[2])
         else panels[#panels+1]={r[1],r[2]} end
     end
-    assert(#panels>=1 and #panels<=2,'opaque plates should leave wide gaps without a blank side')
+    assert(#panels==3,'opaque conveyor must keep three complete plates per side')
     local width=panels[1][2]-panels[1][1]
     for _,p in ipairs(panels) do
         assert(math.abs(p[2]-p[1]-width)<0.001,'label handoff changed a panel length')
