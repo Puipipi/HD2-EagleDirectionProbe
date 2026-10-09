@@ -72,9 +72,12 @@ end
         replay(SCENE + MENU + '''
 frames(45)
 local sky_id='eagle_direction_probe.show_sky'
-local ground_id='eagle_direction_probe.show_ground'
-assert(callbacks[sky_id] and callbacks[ground_id],'independent display toggles are missing')
+local ground_id='eagle_direction_probe.show_ground_border'
+local triangles_id='eagle_direction_probe.show_ground_triangles'
+assert(callbacks[sky_id] and callbacks[ground_id] and callbacks[triangles_id],
+    'independent display toggles are missing')
 callbacks[ground_id](false)
+callbacks[triangles_id](false)
 frames(1)
 local sky=false
 for _,s in ipairs(M.seg) do
@@ -94,6 +97,7 @@ for _,batch in ipairs({M.seg,M.flow_seg or {}}) do
     for _,s in ipairs(batch) do assert(not s[1]:match('^sky'),'sky arrows remained after disabling') end
 end
 callbacks[ground_id](true)
+callbacks[triangles_id](true)
 frames(1)
 assert(#(M.flow_seg or {})>0,'ground animation did not return after reenabling')
 ''')
@@ -122,7 +126,7 @@ local register=host.register_option
 local fail=true
 local subscriptions={}
 host.register_option=function(id,spec)
-    if id=='eagle_direction_probe.show_ground' and fail then error('menu temporarily refuses row') end
+    if id=='eagle_direction_probe.show_ground_border' and fail then error('menu temporarily refuses row') end
     return register(id,spec)
 end
 local subscribe=host.on_change
@@ -134,7 +138,7 @@ frames(45)
 assert(FRAME_HAS_LINES and not M.draw_off,'menu failure disabled rendering')
 fail=false
 frames(25)
-assert(callbacks['eagle_direction_probe.show_ground'],'refused row was never retried')
+assert(callbacks['eagle_direction_probe.show_ground_border'],'refused row was never retried')
 for _,n in pairs(subscriptions) do assert(n==1,'retry duplicated a successful callback') end
 ''')
 

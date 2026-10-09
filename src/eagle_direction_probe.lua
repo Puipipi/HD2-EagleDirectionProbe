@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.9.7',
+    version = '1.9.8',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -77,8 +77,10 @@ local M = {
     anchor = nil,
     impact = nil,           -- where the thrown beacon came to rest = the impact point
     through_world = false,  -- normal depth testing; optional saved Mod Options Menu toggle
+    show_air = true,
     show_sky = true,
-    show_ground = true,
+    show_ground_border = true,
+    show_ground_triangles = true,
     every_frame = true,     -- submit every frame: the line does NOT persist between frames
     frame_last = nil,       -- high-resolution frame clock, for the honest timing report
     frame_peak_ms = 0,
@@ -761,6 +763,15 @@ end
 -- puts more than one aircraft in the air, and they all share one resource id. They are keyed
 -- by unit handle, so each gets its own track and its own corridor instead of the two being
 -- interleaved into one impossible zig-zag.
+local function attack_climbing(track)
+    local h=track.heading
+    local p=track.trail[#track.trail]
+    local in_pass=track.near_target or not track.has_target
+        and (track.first_z or 0)-(track.minimum_z or 0)>=60
+    return track.saw_descent and in_pass and h and p and
+        (h[3]>0.05 or h[3]>=-0.05 and p[3]-(track.minimum_z or p[3])>2)
+end
+
 local function update_tracks(eagle_entries)
     local now = os.clock()
     for _, entry in ipairs(eagle_entries) do
@@ -834,7 +845,8 @@ local function nearest_heading(point)
     for unit, track in pairs(M.tracks) do
         local last = track.trail[#track.trail]
         -- A climbing departure from the previous call is not a new incoming strike.
-        if not track.finished and last and track.heading and track.heading[3] <= 0.3 then
+        if not track.finished and last and track.heading and track.heading[3] <= 0.3
+            and not attack_climbing(track) then
             local d = (last[1] - point[1]) ^ 2 + (last[2] - point[2]) ^ 2
             if best_d == nil or d < best_d then
                 best, best_unit, best_d = track.heading, unit, d
@@ -1240,6 +1252,7 @@ local function release_line()
     M.lines, M.line_order, M.line, M.line_world = {}, {}, nil, nil
     M.seg, M.geom_key, M.need_submit = nil, nil, false
     M.flow_seg,M.flow_key=nil,nil
+    M.ground_seg,M.ground_geom_key=nil,nil
     M.seg_count = 0
 end
 
@@ -1266,10 +1279,14 @@ local function menu_tick()
     local rows={
         {'through_world','透视显示',false,
             '开启后，空中箭头和地面走廊会穿过地形及建筑显示。默认关闭；点击应用后生效并保存。'},
+        {'show_air','飞鹰指示箭头',true,
+            '显示跟随飞鹰机头的指示箭头和较淡尾迹。独立于天空与地面指引，默认开启。点击应用后保存。'},
         {'show_sky','天空方向箭头',true,
             '在落点附近上空显示五枚竖直的实心→箭头，带箭杆、无边界，沿来袭方向流动。按缓存地形抬升，飞机离场后消失。'},
-        {'show_ground','地面走廊',true,
-            '显示贴地边界、小型填充流动箭头和紧凑金色菱形。天空和地面都关闭时，停止新的地形查询。'}}
+        {'show_ground_border','地面走廊边框',true,
+            '显示贴地的白色与青色双边界。与地面三角箭头分开控制，默认开启。点击应用后保存。'},
+        {'show_ground_triangles','地面走廊三角',true,
+            '显示贴地实心流动三角箭头。任一地面选项开启时显示落点菱形。天空和地面都关闭时停止地形查询。'}}
     local complete=true
     for _,row in ipairs(rows) do
         local key=row[1]
@@ -1280,9 +1297,15 @@ local function menu_tick()
                     label=row[2],default=row[3],description=row[4]})
                 if registered~=true then error(tostring(reason)) end
                 local value=host.get(id)
+                display_changed(key,value)
+                -- Same ordering as Stratagem Cooldown: restore BEFORE pushing. MOM
+                -- owns persistence; never periodically rewrite its saved values.
+                if type(host.set)=='function' then
+                    local pushed,reason3=host.set(id,M[key])
+                    if pushed~=true then error(tostring(reason3)) end
+                end
                 local subscribed,reason2=host.on_change(id,function(v) display_changed(key,v) end)
                 if subscribed~=true then error(tostring(reason2)) end
-                display_changed(key,value)
                 M.menu_rows[key]=true
             end)
             if not ok then
@@ -1298,7 +1321,7 @@ local function menu_tick()
     if complete then
         M.menu_host=host
         M.menu_status='REGISTERED'
-        log('Mod Options Menu: registered depth/sky/ground toggles')
+        log('Mod Options Menu: registered depth/air/sky/borders/triangles toggles')
     end
 end
 
@@ -1565,21 +1588,22 @@ local function collision_height(imp,x,y)
     u,v=math.max(0,math.min(g.n,u)),math.max(0,math.min(2,v))
     local i,j=math.min(g.n-1,math.floor(u)),math.min(1,math.floor(v))
     local a,b=u-i,v-j
-    local sum=0
-    for _,c in ipairs({{i,j,(1-a)*(1-b)},{i+1,j,a*(1-b)},
-        {i,j+1,(1-a)*b},{i+1,j+1,a*b}}) do
-        -- Exact grid vertices only need their own hit, not zero-weight neighbours.
-        if c[3]>0.000001 then
-            local h=g.h[c[1]*3+c[2]+1]
-            if type(h)~='number' then return nil end
-            sum=sum+h*c[3]
-        end
-    end
+    -- This hot path runs for both ends of every filled ground row. Scalar weights
+    -- avoid five temporary tables per interpolation, with identical missing-hit rules.
+    local base=i*3+j+1
+    local wa,wb,wc,wd=(1-a)*(1-b),a*(1-b),(1-a)*b,a*b
+    local ha,hb,hc,hd=g.h[base],g.h[base+3],g.h[base+1],g.h[base+4]
+    if wa>0.000001 and type(ha)~='number'
+        or wb>0.000001 and type(hb)~='number'
+        or wc>0.000001 and type(hc)~='number'
+        or wd>0.000001 and type(hd)~='number' then return nil end
+    local sum=(wa>0.000001 and ha*wa or 0)+(wb>0.000001 and hb*wb or 0)
+        +(wc>0.000001 and hc*wc or 0)+(wd>0.000001 and hd*wd or 0)
     return sum
 end
 
 local function terrain_tick()
-    if not M.show_ground and not M.show_sky then return end
+    if not M.show_ground_border and not M.show_ground_triangles and not M.show_sky then return end
     local now=os.clock()
     if now<(M.terrain_retry_at or 0) or next(M.impacts)==nil then return end
     local world=main_world()
@@ -1720,7 +1744,21 @@ local function add_sky_corridor(seg,imp,phase)
     end
 end
 
-local function build_geometry()
+-- Aircraft pose never belongs in this key: terrain outlines and landing diamonds
+-- have their own cache, independent of the fast moving aircraft indicator.
+local function ground_geometry_key()
+    local parts={'g'..tostring(M.ground_revision or 0),tostring(M.show_ground_border),
+        tostring(M.show_ground_triangles)}
+    for id,imp in pairs(M.impacts) do
+        local h=imp.heading
+        parts[#parts+1]=string.format('%s:%.1f,%.1f,%.1f:%s',tostring(id),
+            imp.p[1],imp.p[2],imp.p[3],h and string.format('%.2f,%.2f',h[1],h[2]) or '-')
+    end
+    table.sort(parts)
+    return table.concat(parts,'|')
+end
+
+local function build_geometry(ground_key)
     local seg = {}
 
     -- The width anchor is rebuilt from scratch every time, never carried over.
@@ -1787,6 +1825,7 @@ local function build_geometry()
 
         local steps = math.max(1, math.ceil((2 * GROUND_HALF_M) / GROUND_SEG_M))
 
+        if M.show_ground_border then
         -- Paired borders: cyan outer edge and white inner edge on each side.
         local gap = math.max(0.3, half * 0.06)
         local offsets = { -half, -half + gap, half - gap, half }
@@ -1806,6 +1845,7 @@ local function build_geometry()
         -- and the small amber landing cue stay here.
         stroke('holo', at(-GROUND_HALF_M, -half), at(-GROUND_HALF_M, half),1)
         stroke('holo', at(GROUND_HALF_M, -half), at(GROUND_HALF_M, half),1)
+        end
         -- Compact filled upright diamond, 2.8 m tall / 2.8 m wide. Two filled
         -- planes retain a silhouette from either side without a giant ground stamp.
         local center = {imp[1],imp[2],imp[3]+GROUND_LIFT_M}
@@ -1820,7 +1860,7 @@ local function build_geometry()
 
     -- One corridor per aircraft, so two Eagles get two corridors instead of one zig-zag.
     for _, track in pairs(M.tracks) do
-        if not track.finished then
+        if M.show_air and not track.finished then
             local trail = track.trail
             local n = #trail
             local head = track.heading
@@ -1837,30 +1877,32 @@ local function build_geometry()
 
     -- The ground strips, deliberately OUTSIDE the aircraft loop: they depend on the impact
     -- points and their stored headings, and on nothing about whether an aircraft is still up.
-    for _, imp in pairs(M.impacts) do
-        if imp.heading then
-            if M.show_ground then add_strip(imp, imp.heading) end
+    if ground_key~=M.ground_geom_key or not M.ground_seg then
+        local aircraft_seg=seg
+        seg={}
+        for _, imp in pairs(M.impacts) do
+            if imp.heading and (M.show_ground_border or M.show_ground_triangles) then
+                add_strip(imp, imp.heading)
+            end
         end
+        M.ground_seg,M.ground_geom_key=seg,ground_key
+        M.ground_builds=(M.ground_builds or 0)+1
+        seg=aircraft_seg
     end
+    for _,s in ipairs(M.ground_seg) do seg[#seg+1]=s end
 
     M.seg = seg
     return #seg
 end
 
 local function ground_flow()
-    if not M.show_ground and not M.show_sky then
+    if not M.show_ground_triangles and not M.show_sky then
         if M.flow_key~='hidden' then M.flow_seg,M.flow_key={},'hidden' end
         return M.flow_seg
     end
     local bucket=math.floor(os.clock()*GROUND_FLOW_HZ)
-    local parts={tostring(bucket),tostring(M.ground_revision or 0),tostring(M.show_ground),tostring(M.show_sky)}
-    for id,imp in pairs(M.impacts) do
-        local h=imp.heading
-        parts[#parts+1]=string.format('%s:%.1f,%.1f,%.1f:%s',tostring(id),
-            imp.p[1],imp.p[2],imp.p[3],h and string.format('%.2f,%.2f',h[1],h[2]) or '-')
-    end
-    table.sort(parts)
-    local key=table.concat(parts,'|')
+    local key=tostring(bucket)..'|'..tostring(M.show_sky)..'|'..tostring(M.show_ground_triangles)
+        ..'|'..tostring(M.ground_geom_key)
     if M.flow_key==key then return M.flow_seg end
     local seg={}
     local phase=(bucket/GROUND_FLOW_HZ*GROUND_FLOW_SPEED)%GROUND_TICK_M
@@ -1874,7 +1916,7 @@ local function ground_flow()
                 local z=ground_surface_z(imp,x,y)
                 return z and {x,y,z+GROUND_LIFT_M} or nil
             end
-            if M.show_ground then
+            if M.show_ground_triangles then
             for t=-GROUND_HALF_M+phase,GROUND_HALF_M-2,GROUND_TICK_M do
                 -- Keep the amber landing point clear. Entire arrows stay inside the band.
                 if t>=-GROUND_HALF_M+4 and math.abs(t)>8 then
@@ -1891,13 +1933,15 @@ local function ground_flow()
         end
     end
     M.flow_seg,M.flow_key=seg,key
+    M.flow_builds=(M.flow_builds or 0)+1
     return seg
 end
 
 -- What the geometry currently is, cheaply. A change here is what triggers a rebuild and a
 -- re-submission; nothing else does, which is where the frame rate came back from.
 local function geometry_key()
-    local parts = {'g' .. tostring(M.ground_revision or 0)}
+    local ground_key=ground_geometry_key()
+    local parts = {ground_key,tostring(M.show_air),tostring(M.show_sky)}
     for unit, track in pairs(M.tracks) do
         if not track.finished then
             local trail = track.trail
@@ -1909,14 +1953,9 @@ local function geometry_key()
                 h and string.format('%.2f,%.2f', h[1], h[2]) or '-')
         end
     end
-    for call, imp in pairs(M.impacts) do
-        parts[#parts + 1] = string.format('i%s:%.1f,%.1f,%.1f:%s', tostring(call),
-            imp.p[1], imp.p[2], imp.p[3],
-            imp.heading and string.format('%.2f,%.2f', imp.heading[1], imp.heading[2]) or '-')
-    end
     -- pairs() order is not stable, and an unstable key would rebuild the geometry every frame.
     table.sort(parts)
-    return table.concat(parts, '|')
+    return table.concat(parts, '|'),ground_key
 end
 
 -- Where the geometry actually IS, in world coordinates, as opposed to where I believe it is.
@@ -2024,6 +2063,7 @@ local function hide_line()
     end
     M.seg, M.geom_key, M.need_submit = nil, nil, false
     M.flow_seg,M.flow_key=nil,nil
+    M.ground_seg,M.ground_geom_key=nil,nil
     M.seg_count = 0
 end
 
@@ -2101,10 +2141,10 @@ local function draw_corridor()
     -- persist between frames looks like: it is visible for the frame right after a submission
     -- and for no other. The fake LineObject in the harness has no persistence semantics, which
     -- is why no offline run could see this.
-    local key = geometry_key()
+    local key,ground_key = geometry_key()
     if key ~= M.geom_key then
-        local count = build_geometry()
-        if count == 0 then
+        local count = build_geometry(ground_key)
+        if count == 0 and #ground_flow() == 0 then
             hide_line()
             M.geom_key = key
             return
@@ -2148,7 +2188,11 @@ local function corridor_tick()
                 track.near_target = true
             end
         end
-        if track and track.heading and track.heading[3] <= 0.3 then
+        -- Incoming steering stays live, but even a shallow climb after the low pass
+        -- is already an exit manoeuvre. Hold the last attack direction while climbing;
+        -- a return to the low level/descent resumes updates (a tilt is not retirement).
+        local climbing = track and attack_climbing(track)
+        if track and track.heading and track.heading[3] <= 0.3 and not climbing then
             imp.heading = track.heading
         end
         local gone = imp.beacon and now - (imp.last_seen or imp.t) > IMPACT_GONE_S

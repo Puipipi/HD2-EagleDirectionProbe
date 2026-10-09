@@ -605,7 +605,7 @@ class CorridorFeedbackTest(unittest.TestCase):
         meant to answer "where does this land" was tied to the thing that had already gone.
         The offline harness reproduced it: seg collapsed to 0 when the aircraft left.
         """
-        body = self.source.split('local function build_geometry()', 1)[1].split(
+        body = self.source.split('local function build_geometry(', 1)[1].split(
             '\nlocal function', 1)[0]
         # The strips are built after the per-aircraft loop, from the impact table alone.
         # The marker is the strip CALL, not the impacts table: build_geometry now also walks
@@ -734,7 +734,7 @@ class CorridorFeedbackTest(unittest.TestCase):
         tests/offline/verify_terrain.py: flat samples give a 0.00 m spread, a 40 m hillside
         gives 28.36 m, and removing the samples returns it to flat.
         """
-        strip = self.source.split('local function build_geometry()', 1)[1].split(
+        strip = self.source.split('local function build_geometry(', 1)[1].split(
             '\nlocal function', 1)[0]
         self.assertIn('ground_surface_z(impact,x,y)', strip,
                       'every strip vertex must take its height from the shared surface cache')

@@ -19,7 +19,7 @@ def render(phase):
     image=Image.new('RGBA',(1500,1200),'#07141c')
     draw=ImageDraw.Draw(image)
     draw.text((60,35),'飞鹰 / 天空箭头 + 精简地面引导',font=TITLE,fill='#ecffff')
-    draw.text((62,92),'1.9.7 源码几何示意 · 密排填充 · 非实机截图',font=BODY,fill='#80b8c8')
+    draw.text((62,92),'1.9.8 源码几何示意 · 密排填充 · 非实机截图',font=BODY,fill='#80b8c8')
     panels=[(150,440,'天空 · 竖直 → 箭头 / 带箭杆 / 沿来袭方向移动'),
             (480,770,'地面 · 小型流动箭头 / 细边界 / 紧凑金色落点'),
             (810,1100,'飞机 · 保留现有机头指引')]

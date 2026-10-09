@@ -40,7 +40,7 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.9.7'
+VERSION = '1.9.8'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
@@ -67,6 +67,8 @@ WHAT THIS IS
   numerical limit. Ground is 200 m long and visually 12 m wide. All its direction
   heads travel. The amber landing diamond is 2.8 m tall and wide. The stem extends
   220 m behind the aircraft; the arrow extends 120 m ahead.
+  Ground/sky directions hold the attack axis during shallow departure climbs;
+  the aircraft arrow continues following its live pose.
   Coarse terrain mode queries the complete strip on a 10 m grid (63 points).
   All strips share a maximum of TWO queries per frame and a 0.5 ms soft budget.
   Heights are cached; small steering corrections do not restart sampling.
@@ -80,14 +82,20 @@ WHAT THIS IS
   No Runtime mod is required; no BTO mod is required at runtime.
   Separate thrown beacons own separate strips, independent of the logging call.
   Ground arrow sides also bend along the cached samples, without extra queries.
-  The sky has arrows ONLY, no boundary. Five rigid glyphs sit about 26 m above
+  The sky has arrows ONLY, no boundary. Five rigid glyph centres sit 12 m above
   their locally sampled surface (beacon height fallback), along the incoming axis.
   Sky brightness flows gently forward. Ground arrows travel at 6 m/s, with their
   geometry cached at 20 Hz separately from static outlines; no extra ray queries.
   Mod Options Menu (optional): MODS > 飞鹰方向指引. Toggles: 透视显示 (OFF by
-  default), 天空方向箭头 (ON), 地面走廊 (ON). Click Apply; the menu saves choices.
+  default), 飞鹰指示箭头 (ON), 天空方向箭头 (ON), 地面走廊边框 (ON),
+  地面走廊三角 (ON). Click Apply; the menu saves choices. Either ground option
+  shows the landing diamond. Hiding the aircraft arrow also hides its trail.
   Choices apply during a mission. Without the menu, these defaults are used.
-  Hiding both sky and ground stops new terrain queries. The aircraft guide stays.
+  Saved choices are restored before synchronizing defaults, as in Stratagem Cooldown.
+  Hiding both sky and ground stops new terrain queries.
+  Ground geometry is cached independently of aircraft movement. Scalar height
+  interpolation and shared animation signatures reduce Lua CPU/allocations;
+  line density and query budgets are preserved. Game FPS gains are unverified.
 
 STATUS
   Test candidate, not validated in a real mission. Fixes a ground-segment colour
