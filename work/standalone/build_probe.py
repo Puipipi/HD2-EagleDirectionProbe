@@ -40,11 +40,13 @@ DIST = REPO / 'dist'
 RESOURCE = 'mods/codex/eagle_direction_probe'
 GUID = '8664ae8e-edd8-438d-b036-85045aefe011'   # stable: reuse for every rebuild
 DISPLAY_NAME = 'Eagle Direction Probe (read-only)'
-VERSION = '1.10.0-rc1'
+VERSION = '1.10.0-rc2'
 EXTRA_SOURCES = {
     'mods/codex/eagle_terrain_query': REPO / 'src/terrain_query.lua',
     'mods/codex/eagle_terrain_contract': REPO / 'src/terrain_contract.lua',
     'mods/codex/eagle_solid_renderer': REPO / 'src/solid_renderer.lua',
+    'mods/codex/eagle_stratagem_query': REPO / 'src/stratagem_query.lua',
+    'mods/codex/eagle_stratagem_profiles': REPO / 'src/stratagem_profiles.lua',
 }
 
 SCRIPT_EXTENSIONS = ('.bat', '.cmd', '.ps1', '.vbs', '.js', '.exe', '.dll')
@@ -62,13 +64,23 @@ WHAT THIS IS
   14 m long and 6.4 m tall. Its centre floats 12 m above cached terrain, without
   borders. Both ground/sky move 10 m/s; motion is cached at 20 Hz.
   Ground triangles are 5.2 m long and 5.8 m wide. White ground borders use three
-  continuous strands over 0.5 m. Long edges carry six/seven spaced upright red light
+  continuous strands over 0.5 m. Reference edges carry spaced upright red light
   panels per side, with a dim face, a bright baseline and a short upper bracket.
   Panels start 1.1 m above cached ground. The panel nearest the beacon carries
-  EAGLE ? lettering. Panels and attached letters move forward at 10 m/s and wrap
+  a specific REF label when matched, or EAGLE ?. Panels and attached letters move
+  forward at 10 m/s and wrap
   at corridor ends, using the 20 Hz motion cache and cached terrain heights.
   White borders/landing diamond stay static. No extra collision queries are made.
-  Exact type and full strike range are not identified; no automatic range adaptation.
+  EXPERIMENTAL TYPES: independent bounded active-record snapshots at 5 Hz with
+  live guides. Two consecutive unique ball/record position matches identify a
+  candidate among eight Eagle types. Ambiguity keeps EAGLE ?. No Runtime needed.
+  Aircraft direction and retirement still use actual flight tracking.
+  REF labels identify estimated reference footprints. Multi-bomb strips change
+  length/width by type; strafe extends forward, 500kg uses a 25 m reference circle.
+  These are NOT measured damage/safe boundaries. 110mm target remains unknown:
+  its generic direction guide is retained, labelled 110MM TARGET ?.
+  MOM options 具体飞鹰名称（测试） and 按战备调整参考范围（测试） default ON.
+  They save independently; disabling both stops type reads.
   EXPERIMENTAL TRUE FILL: actual retained world-GUI triangles replace scan lines
   for aircraft arrows/shafts, sky shafts/heads, ground triangles, the diamond
   and moving panels.
@@ -82,7 +94,8 @@ WHAT THIS IS
   This is a separate test candidate; 1.9.10 remains the stable release.
   Ground and aircraft guides retire together on a confirmed departure climb,
   without waiting for the aircraft object to despawn. Live guide count has no
-  numerical limit. Ground is 200 m long and visually 12 m wide. All its direction
+  numerical limit. Unknown/range-disabled ground is 200 m long and 12 m wide; known
+  types use the reference bounds above. All its direction
   heads travel. The amber landing diamond is 2.8 m tall and wide. The stem extends
   220 m behind the aircraft; the arrow extends 120 m ahead.
   Ground/sky directions hold the attack axis during shallow departure climbs;
@@ -106,7 +119,8 @@ WHAT THIS IS
   geometry cached at 20 Hz separately from static outlines; no extra ray queries.
   Mod Options Menu (optional): MODS > 飞鹰方向指引. Toggles: 透视显示 (OFF by
   default), 飞鹰指示箭头 (ON), 天空方向箭头 (ON), 地面走廊边框 (ON),
-  地面走廊三角 (ON), 红色全息警戒带 (ON), 真正面填充（测试） (ON).
+  地面走廊三角 (ON), 红色全息警戒带 (ON), 真正面填充（测试） (ON),
+  具体飞鹰名称（测试） (ON), 按战备调整参考范围（测试） (ON).
   The red tape follows the border switch.
   Click Apply; the menu saves choices. Either ground option
   shows the landing diamond. Hiding the aircraft arrow also hides its trail.
@@ -131,8 +145,11 @@ STATUS
   code/build/world/preset checks fail closed. No guessed native address is called.
   The soft budget cannot interrupt an individual native query. Actual game query
   timing and mission appearance still need verification; no FPS claim is made.
-  Exact stratagem type is NOT identified: shared aircraft resources and zero
-  munition-query hits cannot reliably distinguish Airstrike / Cluster / 500kg.
+  Per-call type matching is spatial and experimental, not a unique native event ID.
+  A confirmed label stays with its guide through record/query loss until guide
+  retirement or a mission/world change. Unknown calls never inherit that label.
+  Overlapping calls stay unknown. Reference lengths/widths are baseline estimates,
+  not a measured full damage envelope; upgrades/scatter/targeting remain unverified.
   Eagle Storm is NOT mission-validated. Aircraft using the recognized resource
   can get air guides independently of beacons. Without an ordinary beacon there
   is no reliable ground landing point; nearest-aircraft matching remains heuristic.

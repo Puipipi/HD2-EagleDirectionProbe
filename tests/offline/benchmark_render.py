@@ -32,6 +32,16 @@ if BENCH_SOLID then
         return assert(loadfile(BENCH_RENDERER))()
     end
 end
+if BENCH_TYPES then
+    package.preload['mods/codex/eagle_stratagem_profiles']=function()
+        return assert(loadfile(BENCH_PROFILES))()
+    end
+    local records={}
+    for i=1,BENCH_STRIKES do records[i]={type=BENCH_TYPE_ID,p={i*300,0,0}} end
+    package.preload['mods/codex/eagle_stratagem_query']=function()
+        return {new=function() return {snapshot=function() return records,'READY','bench' end} end}
+    end
+end
 sr.LineObject.reset=function() end
 sr.LineObject.add_line=function() lines=lines+1 end
 sr.LineObject.dispatch=function() end
@@ -64,6 +74,7 @@ collectgarbage('stop') -- report allocated memory, separate from GC scheduling
 local kb=collectgarbage('count')
 local builds=M.ground_builds or 0
 local queries=M.terrain_queries or 0
+local type_reads=M.type_reads or 0
 lines=0;face_updates=0
 local face_creates=faces
 BENCH_STEP=function(n)
@@ -76,13 +87,14 @@ BENCH_STEP=function(n)
     BENCH_SOLID_ACTIVE=M.solid_active or false
     BENCH_GROUND_BUILDS=(M.ground_builds or 0)-builds
     BENCH_QUERIES=(M.terrain_queries or 0)-queries
+    BENCH_TYPE_READS=(M.type_reads or 0)-type_reads
     assert(M.errors==0 and not M.draw_off,'benchmark update failed')
     collectgarbage('restart')
 end
 '''
 
 
-def measure(path, strikes, frames, solid=False):
+def measure(path, strikes, frames, solid=False, types=False, type_id=18):
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp)/'CowboyBingus/Helldivers2/Logs').mkdir(parents=True)
         with patch.dict(os.environ, {'DSH_HARNESS_TMP': tmp, 'DSH_PROBE_PATH': str(path),
@@ -91,6 +103,9 @@ def measure(path, strikes, frames, solid=False):
             lua.globals().BENCH_STRIKES=strikes
             lua.globals().BENCH_SOLID=solid
             lua.globals().BENCH_RENDERER=str(ROOT/'src/solid_renderer.lua')
+            lua.globals().BENCH_TYPES=types
+            lua.globals().BENCH_TYPE_ID=type_id
+            lua.globals().BENCH_PROFILES=str(ROOT/'src/stratagem_profiles.lua')
             lua.execute('print=function() end')
             lua.execute(SETUP+SCENE)
             began=time.perf_counter()
@@ -102,6 +117,7 @@ def measure(path, strikes, frames, solid=False):
                  'face_updates_per_frame':g.BENCH_FACE_UPDATES/frames,
                  'face_creates':g.BENCH_FACE_CREATES,'active_faces':g.BENCH_ACTIVE_FACES,
                  'solid_active':bool(g.BENCH_SOLID_ACTIVE),
+                 'type_snapshots':g.BENCH_TYPE_READS,
                  'ground_rebuilds':g.BENCH_GROUND_BUILDS,'terrain_queries':g.BENCH_QUERIES}
             lua.globals().shutdown()
             return row
@@ -113,6 +129,8 @@ def main():
     ap.add_argument('--frames',type=int,default=280)
     ap.add_argument('--repeats',type=int,default=5)
     ap.add_argument('--solid-fill',action='store_true',help='exercise the real retained renderer with mock native APIs')
+    ap.add_argument('--types',action='store_true',help='exercise type matching with mock native snapshots')
+    ap.add_argument('--type-id',type=int,default=18)
     args=ap.parse_args()
     baseline=subprocess.run(['git','show',args.baseline_ref+':src/eagle_direction_probe.lua'],
                             cwd=ROOT,capture_output=True,check=True).stdout
@@ -125,7 +143,7 @@ def main():
             # Alternate runs so warmup/thermal scheduling affects both versions similarly.
             for _ in range(args.repeats):
                 for key,path in (('baseline',old),('current',ROOT/'src/eagle_direction_probe.lua')):
-                    rows[key].append(measure(path,n,args.frames,args.solid_fill))
+                    rows[key].append(measure(path,n,args.frames,args.solid_fill,args.types,args.type_id))
             result['scenes'][n]={key:{metric:round(statistics.median(r[metric] for r in runs),4)
                                 for metric in runs[0]} for key,runs in rows.items()}
         print(json.dumps(result,ensure_ascii=False,indent=2))

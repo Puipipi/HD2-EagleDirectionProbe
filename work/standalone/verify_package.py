@@ -50,7 +50,7 @@ def main():
     previous = resources(build.DIST / 'HD2-EagleDirectionProbe-1.9.10.zip')
     for name in ('mods/codex/eagle_terrain_query','mods/codex/eagle_terrain_contract'):
         assert current[resource_hash(name)] == previous[resource_hash(name)], 'native module changed'
-    print('ZIP CRC, manifest, all 4 resource payloads: OK')
+    print('ZIP CRC, manifest, all %d resource payloads: OK' % len(current))
     print('Native terrain resources byte-identical to 1.9.10: OK')
     print('Manager IconPath/option Image and bundled square PNG: OK (%d x %d)' % (width,height))
     print('Bytes:', path.stat().st_size)

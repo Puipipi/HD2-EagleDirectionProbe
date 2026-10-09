@@ -30,7 +30,7 @@ local MOD_KEY = 'HD2EagleDirectionProbe'
 if rawget(_G, MOD_KEY) then return rawget(_G, MOD_KEY) end
 
 local M = {
-    version = '1.10.0-rc1',
+    version = '1.10.0-rc2',
     status = 'starting',
     reads = 0,
     errors = 0,
@@ -84,6 +84,9 @@ local M = {
     show_cordon = true,
     solid_fill = true,      -- experimental retained world triangles; saved MOM switch
     solid_active = false,
+    show_type = true,
+    adapt_range = true,
+    type_labels = {},
     every_frame = true,     -- submit every frame: the line does NOT persist between frames
     frame_last = nil,       -- high-resolution frame clock, for the honest timing report
     frame_peak_ms = 0,
@@ -1286,6 +1289,10 @@ local function menu_tick()
         or type(host.on_change)~='function' then return end
     if M.menu_candidate~=host then M.menu_candidate,M.menu_rows=host,{} end
     local rows={
+        {'show_type','具体飞鹰名称（测试）',true,
+            '独立只读识别活跃战备；连续两次唯一位置匹配才显示名称，歧义保留 EAGLE ?。标签随光片移动。无需 Runtime。应用后保存。'},
+        {'adapt_range','按战备调整参考范围（测试）',true,
+            '唯一识别后调整参考边界：扫射为前向窄带，区域空袭为不同长宽，500kg 为半径25m参考圆。REF 不是精确伤害或安全边界；110mm目标未知，仍仅指方向。应用后保存。'},
         {'solid_fill','真正面填充（测试）',true,
             '用真实三角面填充箭头、落点菱形与移动光片。默认开启；尚待实机验证。关闭恢复线段填充；开启透视时自动使用线段。点击应用后保存。'},
         {'through_world','透视显示',false,
@@ -1299,7 +1306,7 @@ local function menu_tick()
         {'show_ground_triangles','地面走廊三角',true,
             '显示放大的贴地实心三角箭头，与天空箭头以 10 m/s 顺向流动。任一地面选项开启时显示落点菱形。'},
         {'show_cordon','红色全息警戒带',true,
-            '长边断续光片与附着标签以 10 m/s 顺向移动，短边不显示。具体类型尚未识别，暂显示 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
+            '边界断续光片与附着标签以 10 m/s 移动，直带仅在长边；参考圆沿周界移动。名称唯一识别后显示，否则 EAGLE ?。依赖地面边框；关闭可减少绘制量。'}}
     local complete=true
     for _,row in ipairs(rows) do
         local key=row[1]
@@ -1621,6 +1628,64 @@ local function player_position(world)
     return world_position(unit)
 end
 
+local GENERIC_BOUNDS={shape='direction',lo=-100,hi=100,half=6,estimated=false}
+local function display_bounds(imp)
+    if M.adapt_range and M.type_profiles then return M.type_profiles.bounds(imp.stratagem_type) end
+    return GENERIC_BOUNDS
+end
+local function type_label(imp)
+    local def=M.show_type and M.type_profiles and M.type_profiles.catalog[imp.stratagem_type]
+    return def and def.tag or 'EAGLE ?'
+end
+local function type_tick(world,now)
+    -- Only 5 Hz, only with live guides; all display geometry remains plain Lua.
+    M.type_labels={}
+    for id,imp in pairs(M.impacts) do M.type_labels[id]=type_label(imp) end
+    if next(M.impacts)==nil or (not M.show_type and not M.adapt_range)
+        or now<(M.type_next or 0) then return end
+    M.type_next=now+0.2
+    if M.type_world~=world then
+        M.type_world,M.type_provider,M.type_epoch=world,nil,nil
+        for _,imp in pairs(M.impacts) do imp.stratagem_type,imp.type_pending,imp.type_epoch=nil,nil,nil end
+    end
+    if not M.type_provider and now>=(M.type_retry_at or 0) then
+        local ok,provider=pcall(function()
+            M.type_profiles=require('mods/codex/eagle_stratagem_profiles')
+            return require('mods/codex/eagle_stratagem_query').new()
+        end)
+        if ok and type(provider)=='table' then M.type_provider=provider
+        else M.type_status='UNAVAILABLE: '..tostring(provider):sub(1,140);M.type_retry_at=now+5 end
+    end
+    if not M.type_provider then return end
+    local began=clock_ms()
+    local ok,rows,status,epoch=pcall(M.type_provider.snapshot,M.type_provider,sr,world)
+    M.type_reads=(M.type_reads or 0)+1
+    M.type_peak_ms=math.max(M.type_peak_ms or 0,clock_ms()-began)
+    if not ok then status,rows='UNAVAILABLE: '..tostring(rows):sub(1,140),nil end
+    M.type_status=status
+    M.type_records=type(rows)=='table' and #rows or 0
+    if status=='NOT_MISSION' then epoch='not-mission' end
+    if epoch then M.type_epoch=tostring(world)..':'..epoch end
+    if M.type_profiles then
+        local changed=M.type_profiles.associate(M.impacts,rows,now,M.type_epoch or tostring(world))
+        if changed>0 then M.geom_key,M.flow_key,M.ground_geom_key=nil,nil,nil end
+        for id,imp in pairs(M.impacts) do
+            M.type_labels[id]=type_label(imp)
+            if imp.stratagem_type and imp.type_logged~=imp.stratagem_type then
+                imp.type_logged=imp.stratagem_type
+                log(string.format('strip %s type candidate: %d %s (two unique position snapshots)',
+                    tostring(id),imp.stratagem_type,M.type_profiles.catalog[imp.stratagem_type].name))
+                emit({kind='stratagem_type',t=now,call=id,type=imp.stratagem_type,note=M.type_labels[id]})
+            end
+        end
+    end
+    if rows==nil then M.type_provider=nil;M.type_retry_at=now+5 end
+    if M.type_status~=M.type_logged then
+        M.type_logged=M.type_status
+        log('stratagem reader: '..tostring(M.type_status))
+    end
+end
+
 -- Collision grids belong to the strike, so retiring a strike also retires its work/cache.
 -- Height queries are independent of air-arrow geometry rebuilds and run at most twice per
 -- frame across all strips. A completed, stationary grid generates no further queries.
@@ -1632,12 +1697,14 @@ local function collision_grid(imp)
     local hx,hy=head[1]/n,head[2]/n
     local g=imp.terrain
     local now=os.clock()
+    local extent=display_bounds(imp)
+    local width=math.max(GROUND_TRUE_HALF_M,extent.half+GROUND_BORDER_HALF_WIDTH_M+0.25)
     local moved=g and (g.x-imp.p[1])^2+(g.y-imp.p[2])^2>4
     -- Ignore small steering corrections. At least half a second between refreshes prevents
     -- continuous manoeuvres from repeatedly restarting work before the far end is sampled.
     local turn=g and hx*g.hx+hy*g.hy<0.966
-    if not g or ((moved or turn) and now-g.born>=0.5) then
-        g={x=imp.p[1],y=imp.p[2],z=imp.p[3],hx=hx,hy=hy,half=GROUND_TRUE_HALF_M,
+    if not g or g.half~=width or ((moved or turn) and now-g.born>=0.5) then
+        g={x=imp.p[1],y=imp.p[2],z=imp.p[3],hx=hx,hy=hy,half=width,
             step=GROUND_SEG_M,n=math.ceil(2*GROUND_HALF_M/GROUND_SEG_M),
             h={},order={},cursor=1,born=now}
         local mid=g.n/2
@@ -1827,11 +1894,13 @@ end
 -- have their own cache, independent of the fast moving aircraft indicator.
 local function ground_geometry_key()
     local parts={'g'..tostring(M.ground_revision or 0),tostring(M.show_ground_border),
-        tostring(M.show_ground_triangles),tostring(M.show_cordon),tostring(M.solid_active)}
+        tostring(M.show_ground_triangles),tostring(M.show_cordon),tostring(M.solid_active),
+        tostring(M.show_type),tostring(M.adapt_range)}
     for id,imp in pairs(M.impacts) do
         local h=imp.heading
-        parts[#parts+1]=string.format('%s:%.1f,%.1f,%.1f:%s',tostring(id),
-            imp.p[1],imp.p[2],imp.p[3],h and string.format('%.2f,%.2f',h[1],h[2]) or '-')
+        parts[#parts+1]=string.format('%s:%.1f,%.1f,%.1f:%s:%s',tostring(id),
+            imp.p[1],imp.p[2],imp.p[3],h and string.format('%.2f,%.2f',h[1],h[2]) or '-',
+            tostring(imp.stratagem_type))
     end
     table.sort(parts)
     return table.concat(parts,'|')
@@ -1865,7 +1934,8 @@ local function build_geometry(ground_key)
         if hlen <= 0 then return end
         hx, hy = hx / hlen, hy / hlen
         local px, py = -hy, hx
-        local half = GROUND_DISPLAY_HALF_M
+        local bounds=display_bounds(impact)
+        local half = bounds.half
         -- Segment records use a colour key; submit_geometry constructs the engine colour
         -- in the submitting frame. Storing a Color here makes colors[s[1]] return nil.
         local c = 'ground'
@@ -1902,9 +1972,21 @@ local function build_geometry(ground_key)
             return { x, y, z + GROUND_LIFT_M }
         end
 
-        local steps = math.max(1, math.ceil((2 * GROUND_HALF_M) / GROUND_SEG_M))
+        local steps = math.max(1, math.ceil((bounds.hi-bounds.lo) / GROUND_SEG_M))
 
         if M.show_ground_border then
+            if bounds.shape=='circle' then
+                for lane=-1,1 do
+                    local radius=bounds.radius+lane*GROUND_BORDER_HALF_WIDTH_M
+                    local prev
+                    for k=0,48 do
+                        local angle=k*math.pi*2/48
+                        local v=at(radius*math.cos(angle),radius*math.sin(angle))
+                        if prev and v then seg[#seg+1]={c,prev,v} end
+                        prev=v
+                    end
+                end
+            else
             -- Solid white bands: every strand is continuous, with fixed world width.
             -- Reusing each endpoint also avoids small mismatches at terrain grid joins.
             for _,side in ipairs({-1,1}) do
@@ -1912,7 +1994,7 @@ local function build_geometry(ground_key)
                     local o=side*half+lane*GROUND_BORDER_HALF_WIDTH_M
                     local prev=nil
                     for k=0,steps do
-                        local t=-GROUND_HALF_M+2*GROUND_HALF_M*k/steps
+                        local t=bounds.lo+(bounds.hi-bounds.lo)*k/steps
                         local v=at(t,o)
                         if prev and v then seg[#seg+1]={c,prev,v} end
                         prev=v
@@ -1920,9 +2002,11 @@ local function build_geometry(ground_key)
                 end
                 -- White short caps remain on the ground; no upright red end wall.
                 for lane=0,2 do
-                    local t=side*(GROUND_HALF_M-lane*GROUND_BORDER_HALF_WIDTH_M)
+                    local t=side<0 and bounds.lo+lane*GROUND_BORDER_HALF_WIDTH_M
+                        or bounds.hi-lane*GROUND_BORDER_HALF_WIDTH_M
                     stroke(c,at(t,-half),at(t,half),1)
                 end
+            end
             end
         end
         -- Compact filled upright diamond, 2.8 m tall / 2.8 m wide. Two filled
@@ -1979,15 +2063,47 @@ local CORDON_STROKES={
     {0,1,0.6,1},{0,1,0,0.5},{0.6,1,0.6,0.5},
     {0,0.5,0.6,0.5},{0,0.5,0,0},{0.6,0.5,0.6,0},
     {0,0,0.6,0},{0.3,0.5,0.3,0.2},{0.28,0.02,0.32,0.02},
+    {0,1,0.6,0},{0,0,0.6,1},{0.3,1,0.3,0},
+    {0,0.5,0.6,1},{0,0.5,0.6,0},{0.3,0.5,0.6,0},
+    {0,1,0.3,0.5},{0.3,0.5,0.6,1},
 }
 local CORDON_GLYPHS={E={1,2,4,5,7},A={1,2,3,4,5,6},
-    G={1,2,4,5,6,7},L={2,5,7},['?']={1,3,4,8,9}}
+    G={1,2,4,5,6,7},L={2,5,7},['?']={1,3,4,8,9},
+    B={2,5,4,6,7,1,3},C={1,2,5,7},D={1,2,3,5,6,7},F={1,2,4,5},
+    H={2,3,4,5,6},I={1,12,7},J={3,6,7,5},K={2,5,13,14},M={2,5,3,6,16,17},
+    N={2,5,3,6,10},O={1,2,3,5,6,7},P={1,2,3,4,5},Q={1,2,3,5,6,7,15},
+    R={1,2,3,4,5,15},S={1,2,4,6,7},T={1,12},U={2,3,5,6,7},V={2,3,11},
+    W={2,3,5,6,10,11},X={10,11},Y={16,17,8},Z={1,11,7},
+    ['0']={1,2,3,5,6,7},['1']={3,6},['2']={1,3,4,5,7},['3']={1,3,4,6,7},
+    ['4']={2,3,4,6},['5']={1,2,4,6,7},['6']={1,2,4,5,6,7},['7']={1,3,6},
+    ['8']={1,2,3,4,5,6,7},['9']={1,2,3,4,6,7}}
 
 local function add_cordon_panels(seg,imp,hx,hy,phase)
+    local bounds=display_bounds(imp)
+    local text=type_label(imp)
+    local pitch,text_height=0.56,0.7
+    local text_width=(#text-1)*pitch+0.42
+    local label_extent=math.max(3,text_width/2+0.5)
+    local lo,hi=bounds.lo,bounds.hi
+    if bounds.shape=='circle' then lo,hi=-math.pi*bounds.radius/2,math.pi*bounds.radius/2 end
+    local start=math.floor(lo/30)*30+phase
+    local label_center,distance=nil,math.huge
+    local target=(lo+hi)/2
+    for center=start,hi,30 do
+        local extent=math.max(5,label_extent)
+        if center-extent>=lo and center+extent<=hi and math.abs(center-target)<distance then
+            label_center,distance=center,math.abs(center-target)
+        end
+    end
     for _,side in ipairs({-1,1}) do
-        local o=side*GROUND_DISPLAY_HALF_M
+        local o=side*bounds.half
         local function at(t,up)
-            local x,y=imp.p[1]+hx*t-hy*o,imp.p[2]+hy*t+hx*o
+            local along,lateral=t,o
+            if bounds.shape=='circle' then
+                along=bounds.radius*math.sin(t/bounds.radius)
+                lateral=side*bounds.radius*math.cos(t/bounds.radius)
+            end
+            local x,y=imp.p[1]+hx*along-hy*lateral,imp.p[2]+hy*along+hx*lateral
             local z=ground_surface_z(imp,x,y)
             return z and {x,y,z+GROUND_LIFT_M+up} or nil
         end
@@ -1997,10 +2113,10 @@ local function add_cordon_panels(seg,imp,hx,hy,phase)
         end
         -- Whole panels enter/leave at the strip ends; no geometry exceeds the
         -- existing collision grid. The label occupies the panel nearest the ball.
-        for center=-90+phase,105,30 do
-            local label_panel=center>=-15 and center<15
-            local extent=label_panel and 3 or 5
-            if center-extent>=-GROUND_HALF_M and center+extent<=GROUND_HALF_M then
+        for center=start,hi,30 do
+            local label_panel=center==label_center
+            local extent=label_panel and label_extent or 5
+            if center-extent>=lo and center+extent<=hi then
                 local rows=label_panel and 8 or 5
                 local height=label_panel and 1 or 0.6
                 if M.solid_active then
@@ -2020,11 +2136,8 @@ local function add_cordon_panels(seg,imp,hx,hy,phase)
                 line('cordon',center-extent,0.3+height,center-extent+0.85,0.3+height)
                 line('cordon',center-extent,0.3+height,center-extent,0.3+height-0.2)
                 if label_panel then
-                    -- No verified per-beacon type exists: never guess from local
-                    -- menu selection or globally shared munition resources.
-                    local text='EAGLE ?'
-                    local pitch,height=0.56,0.7
-                    local width=(#text-1)*pitch+0.42
+                    local height=text_height
+                    local width=text_width
                     for i=1,#text do
                         local glyph=CORDON_GLYPHS[text:sub(i,i)]
                         if glyph then
@@ -2058,6 +2171,7 @@ local function ground_flow()
     local phase=distance%GROUND_TICK_M
     local cordon_phase=(distance+15)%30-15
     for _,imp in pairs(M.impacts) do
+        local bounds=display_bounds(imp)
         local head=imp.heading
         local len=head and math.sqrt(head[1]^2+head[2]^2) or 0
         if len>0 then
@@ -2068,9 +2182,13 @@ local function ground_flow()
                 return z and {x,y,z+GROUND_LIFT_M} or nil
             end
             if M.show_ground_triangles then
-            for t=-GROUND_HALF_M+phase,GROUND_HALF_M-2,GROUND_TICK_M do
+            -- Short reference footprints need tighter spacing to avoid empty animation phases.
+            -- Speed remains distance/time; only the wrap period and spacing change.
+            local spacing=math.min(GROUND_TICK_M,(bounds.hi-bounds.lo)/3)
+            local ground_phase=distance%spacing
+            for t=bounds.lo+ground_phase,bounds.hi-2,spacing do
                 -- Keep the amber landing point clear. Entire arrows stay inside the band.
-                if t>=-GROUND_HALF_M+GROUND_ARROW_LENGTH_M and math.abs(t)>8 then
+                if t>=bounds.lo+GROUND_ARROW_LENGTH_M and math.abs(t)>8 then
                     local tip,left,right=at(t,0),at(t-GROUND_ARROW_LENGTH_M,-GROUND_ARROW_HALF_WIDTH_M),
                         at(t-GROUND_ARROW_LENGTH_M,GROUND_ARROW_HALF_WIDTH_M)
                     if tip and left and right then
@@ -2391,6 +2509,7 @@ local function corridor_tick()
     end
     table.sort(live, function(a, b) return M.impacts[a].t < M.impacts[b].t end)
     M.impact_order = live
+    type_tick(world,now)
 end
 
 -- Every tick runs inside the temp-byte-count guard and is timed. A tick that busts the
