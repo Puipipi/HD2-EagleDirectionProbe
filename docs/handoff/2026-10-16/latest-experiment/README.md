@@ -18,5 +18,5 @@ The fake native text boundary copies the 16-float pose and 3-float position sync
 Run from the repository root:
 
 ```powershell
-python -B mods/eagle-direction-probe/work/eagle-multi-perf-20261016/native-text-static-prototype/test_native_text_static_prototype.py
+python -B docs/handoff/2026-10-16/latest-experiment/test_native_text_static_prototype.py
 ```
