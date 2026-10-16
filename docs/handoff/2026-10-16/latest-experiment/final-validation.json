@@ -1,0 +1,61 @@
+{
+  "started_at_utc": "2026-10-16T13:58:42.725034+00:00",
+  "finished_at_utc": "2026-10-16T13:58:42.776486+00:00",
+  "cwd": "C:\\Users\\23825\\Desktop\\2-apex-x20",
+  "command_argv": [
+    "C:\\Python314\\python.exe",
+    "-B",
+    "C:\\Users\\23825\\Desktop\\2-apex-x20\\mods\\eagle-direction-probe\\work\\eagle-multi-perf-20261016\\native-text-static-prototype\\test_native_text_static_prototype.py"
+  ],
+  "test_exit_code": 0,
+  "test_count_from_stdout": 15,
+  "stdout_raw": "PASS: 15 native text static prototype contract tests\n",
+  "stderr_raw": "",
+  "hashes": {
+    "prototype_module": {
+      "path": "C:\\Users\\23825\\Desktop\\2-apex-x20\\mods\\eagle-direction-probe\\work\\eagle-multi-perf-20261016\\native-text-static-prototype\\native_text_static_prototype.lua",
+      "sha256": "1FBCBB7BA6B7292AA25C1AAC80AA7483A1A5A4F8FEDD4CF0F1187395BB4BBEE3"
+    },
+    "prototype_tests": {
+      "path": "C:\\Users\\23825\\Desktop\\2-apex-x20\\mods\\eagle-direction-probe\\work\\eagle-multi-perf-20261016\\native-text-static-prototype\\test_native_text_static_prototype.py",
+      "sha256": "ECD2C140F2A28FC1DFD86A67DC5293E4C854F245DAA462C31BA0C07B4821615B"
+    },
+    "production_candidate_main": {
+      "path": "C:\\Users\\23825\\Desktop\\2-apex-x20\\mods\\eagle-direction-probe\\work\\eagle-multi-perf-20261016\\candidate\\src\\eagle_direction_probe.lua",
+      "sha256": "3AEA1798DD88F20F4E567F1C7E21BDFECFD21BED88C6993F75659ECD2AAE7546"
+    },
+    "production_candidate_solid_renderer": {
+      "path": "C:\\Users\\23825\\Desktop\\2-apex-x20\\mods\\eagle-direction-probe\\work\\eagle-multi-perf-20261016\\candidate\\src\\solid_renderer.lua",
+      "sha256": "6B9B5CBE144DA8D907EC67E9DBB2CF4FF79CA6BA67B5F771898232699B03DBDE"
+    },
+    "distribution_zip": {
+      "path": "C:\\Users\\23825\\Desktop\\2-apex-x20\\mods\\eagle-direction-probe\\dist\\HD2-EagleDirectionProbe-1.10.1-beta.1.zip",
+      "sha256": "7853FFA142287AF0CBBB061A5DD47A850C4755AEC221BB5E382F4AB48C9F6647",
+      "bytes": 2262092
+    }
+  },
+  "expected_hash_comparison": {
+    "prototype_module": {
+      "expected_sha256": "1FBCBB7BA6B7292AA25C1AAC80AA7483A1A5A4F8FEDD4CF0F1187395BB4BBEE3",
+      "matches": true
+    },
+    "prototype_tests": {
+      "expected_sha256": "ECD2C140F2A28FC1DFD86A67DC5293E4C854F245DAA462C31BA0C07B4821615B",
+      "matches": true
+    },
+    "production_candidate_main": {
+      "expected_sha256": "3AEA1798DD88F20F4E567F1C7E21BDFECFD21BED88C6993F75659ECD2AAE7546",
+      "matches": true
+    },
+    "production_candidate_solid_renderer": {
+      "expected_sha256": "6B9B5CBE144DA8D907EC67E9DBB2CF4FF79CA6BA67B5F771898232699B03DBDE",
+      "matches": true
+    },
+    "distribution_zip": {
+      "expected_sha256": "7853FFA142287AF0CBBB061A5DD47A850C4755AEC221BB5E382F4AB48C9F6647",
+      "matches": true
+    }
+  },
+  "all_expected_hashes_match": true,
+  "scope": "Offline LuaJIT fake-engine tests and read-only file hashing only; no game input/process interaction, deployment, or package/source modifications."
+}

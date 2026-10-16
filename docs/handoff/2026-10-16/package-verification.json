@@ -1,0 +1,103 @@
+{
+  "archive_path": "C:\\Users\\23825\\Desktop\\2-apex-x20\\mods\\eagle-direction-probe\\dist\\HD2-EagleDirectionProbe-Developer-Handoff-2026-10-16.zip",
+  "archive_size_bytes": 106277656,
+  "archive_sha256": "5dfcf01e9900e06c7d40b17fb5662c20d04ac457e37482cc5fedea402834d9a0",
+  "audit_timestamp_local": "2026-10-16T22:21:21.928484+08:00",
+  "checks": {
+    "zip_crc": "PASS",
+    "duplicate_zip_members": 0,
+    "required_missing": [],
+    "manifest_source_repo_relative_to_workspace": "mods/eagle-direction-probe",
+    "manifest_file_count": 10700,
+    "manifest_expected_total_members": 10702,
+    "archive_total_members": 10702,
+    "manifest_file_count_matches_archive": true,
+    "manifest_missing_members": [],
+    "manifest_payload_bad_count": 0,
+    "manifest_payload_bad_sample": [],
+    "sha256sum_line_count": 10701,
+    "sha256sum_malformed_lines": 0,
+    "sha256sum_duplicate_or_repeated_paths": [],
+    "sha256sum_missing_paths": [],
+    "sha256sum_unexpected_paths": [],
+    "sha256sum_bad_count": 0,
+    "sha256sum_bad_sample": [],
+    "releases/HD2-EagleDirectionProbe-1.10.0.zip": {
+      "sha256": "3ed676a1ca4c4385791945ad2eaaca902576032220df42deac2c598dae3ed5f0",
+      "expected_match": true
+    },
+    "releases/HD2-EagleDirectionProbe-1.10.1-beta.1.zip": {
+      "sha256": "7853ffa142287af0cbbb061a5dd47a850c4755aec221bb5e382f4ab48c9f6647",
+      "expected_match": true
+    },
+    "workspace/eagle-direction-probe/work/eagle-multi-perf-20261016/candidate/eagle_direction_probe.lua": {
+      "sha256": "3aea1798dd88f20f4e567f1c7e21bdfecfd21bed88c6993f75659ecd2aae7546",
+      "expected_match": true
+    },
+    "workspace/eagle-direction-probe/work/eagle-multi-perf-20261016/native-text-static-prototype/native_text_static_prototype.lua": {
+      "sha256": "1fbcbb7ba6b7292aa25c1aac80aa7483a1a5a4f8fedd4cf0f1187395bb4bbee3",
+      "expected_match": true
+    },
+    "skills/patches/skills-update.patch": {
+      "sha256": "3ac417eeb3c03ff3ab6eb290b705b95fe3f2cac9ac08b1e7a7e326789e2b82f1",
+      "expected_match": true
+    },
+    "workspace_dist_member_count": 0,
+    "workspace_handoff_task_copy_count": 0,
+    "skills_member_count": 16,
+    "present:skills/manifest.json": true,
+    "present:skills/patches/skills-update.patch": true,
+    "present:skills/experience-notes.md": true,
+    "present:skills/evidence/validation.json": true,
+    "skills_manifest_patch_hash": "3ac417eeb3c03ff3ab6eb290b705b95fe3f2cac9ac08b1e7a7e326789e2b82f1",
+    "prototype_member_count": 4,
+    "prototype_tests_present": true,
+    "prototype_src_leak": [],
+    "candidate_and_dirty_src_distinct": true,
+    "readme_placeholder_detected": false,
+    "readme_claim_40m_and_80m_separate": true,
+    "readme_archive_path_reference_count": 14,
+    "readme_unresolved_archive_paths": [],
+    "inner_release_archives": {
+      "stable": {
+        "crc": "PASS",
+        "members": 12,
+        "manifest_present": true
+      },
+      "beta": {
+        "crc": "PASS",
+        "members": 12,
+        "manifest_present": true
+      }
+    },
+    "skills_copy_file_count": 12,
+    "skills_copy_missing": [],
+    "skills_copy_hash_mismatches": [],
+    "skills_layout": {
+      "repo_copy_skill_md_count": 4,
+      "installed_copy_skill_md_count": 4,
+      "manifest_notes_patch_validation_present": {
+        "skills/manifest.json": true,
+        "skills/experience-notes.md": true,
+        "skills/evidence/validation.json": true,
+        "skills/patches/skills-update.patch": true
+      },
+      "repo_copy_listed_hash_count": 8,
+      "installed_copy_listed_hash_count": 4
+    },
+    "readme_evidence_paths": {
+      "workspace/eagle-direction-probe/work/eagle-multi-perf-20261016/evidence/build-command-1.10.1-beta.1.txt": true,
+      "workspace/eagle-direction-probe/work/eagle-multi-perf-20261016/evidence/build-readback-1.10.1-beta.1.json": true,
+      "workspace/eagle-direction-probe/work/eagle-multi-perf-20261016/performance-results.md": true,
+      "workspace/eagle-direction-probe/work/eagle-stable-restart/user-release/source-manifest.json": true
+    },
+    "source_manifest_location_note": "Present at user-release/source-manifest.json, sibling of src/ (not inside src/). README phrase says the snapshot includes its manifest.",
+    "git_bundle_verify": {
+      "exit_code": 0,
+      "result": "The bundle records a complete history; 20 refs; SHA-1 bundle OK."
+    }
+  },
+  "errors": [],
+  "result": "PASS",
+  "audit_timestamp_local_updated": "2026-10-16T22:22:06.742746+08:00"
+}

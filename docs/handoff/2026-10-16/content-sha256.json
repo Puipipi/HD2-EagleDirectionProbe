@@ -1,0 +1,10 @@
+{
+  "exclusions.tsv": "6a5d10a026ced41c65264bf5642170b5f112f8a3627bd9985f3137e210fc1865",
+  "latest-experiment/final-validation.json": "bad58d7e8b730a889c84cd241006326caf498b6fa305300d74ec6a364b72e2ce",
+  "latest-experiment/native_text_static_prototype.lua": "1fbcbb7ba6b7292aa25c1aac80aa7483a1a5a4f8fedd4cf0f1187395bb4bbee3",
+  "latest-experiment/README.md": "8e4c133eedce0c0fa9e475c5f4680c20d00d69f3b5e2b753f5bc23e1576e55dc",
+  "latest-experiment/test_native_text_static_prototype.py": "ecd2c140f2a28fc1dfd86a67dc5293e4c854f245daa462c31ba0c07b4821615b",
+  "package-verification.json": "253b45e6c79f0045f01a74e1f7f22d9568e580b2c48d84a844ad32372434f8db",
+  "performance-results.md": "9607fc87b4f7447828b1f2383947859962a9c9287d668488f9b3dea520150e72",
+  "README.md": "0992e9f80777954fce5d58b473ec1f768de89fcbffe0af055f02ce39605276df"
+}
